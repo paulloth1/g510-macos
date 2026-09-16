@@ -4,14 +4,13 @@ Deliberately a status item rather than a window: the things you change often
 (backlight colour, LCD screen, whether the agent runs) are one click each, and
 anything deeper opens the JSON config.
 """
-import subprocess
 import sys
 
 import objc
 from AppKit import (NSAlert, NSApplication, NSApplicationActivationPolicyAccessory,
                     NSApplicationActivationPolicyRegular, NSColor,
                     NSColorPanel, NSImage, NSMenu, NSMenuItem, NSStatusBar,
-                    NSVariableStatusItemLength, NSWorkspace)
+                    NSVariableStatusItemLength)
 from Foundation import NSObject
 
 import actions
@@ -21,9 +20,19 @@ import control
 import device
 import ipc
 import screens
+from window import swatch_image
 
 MENU_COLORS = ["white", "red", "orange", "yellow", "green",
                "cyan", "blue", "purple", "pink", "off"]
+
+SCREEN_NAMES = {
+    "status": "Status",
+    "clock": "Clock",
+    "claude": "Claude Usage",
+    "media": "Now Playing",
+    "gkeys": "G-key Echo",
+    "app": "Active App",
+}
 
 
 class G510Menu(NSObject):
@@ -117,75 +126,108 @@ class G510Menu(NSObject):
 
     @objc.python_method
     def rebuild(self):
+        """Build the menu.
+
+        This is the glanceable half of the UI: what the keyboard is doing and
+        the handful of things worth changing without opening a window. Setup
+        lives in Configuration, so nothing here needs explaining.
+        """
         self.config = config.load()
+        self.pending_submenus = []
         menu = NSMenu.alloc().init()
         menu.setAutoenablesItems_(False)
 
         connected = control.present()
-        header = self.item(
-            "Keyboard connected" if connected else "Keyboard not found",
-            None, enabled=False)
-        menu.addItem_(header)
-        menu.addItem_(NSMenuItem.separatorItem())
-
-        current = config.format_color(
-            config.parse_color(self.config.get("backlight", "#ffffff")))
-        backlight = NSMenu.alloc().init()
-        backlight.setAutoenablesItems_(False)
-        for name in MENU_COLORS:
-            swatch = config.format_color(config.NAMED_COLORS[name])
-            entry = self.item(f"{name.title()}  {swatch}",
-                              b"pickColor:", state=(swatch == current))
-            entry.setRepresentedObject_(name)
-            backlight.addItem_(entry)
-        backlight.addItem_(NSMenuItem.separatorItem())
-        backlight.addItem_(self.item("Custom…", b"openColorPanel:"))
-        backlight_item = self.item(f"Backlight  {current}", None)
-        menu.addItem_(backlight_item)
-        menu.setSubmenu_forItem_(backlight, backlight_item)
-
-        lcd_config = self.config.get("lcd", {})
-        active_screen = lcd_config.get("screen", "status")
-        lcd_enabled = lcd_config.get("enabled", True)
-        lcd = NSMenu.alloc().init()
-        lcd.setAutoenablesItems_(False)
-        for name in screens.SCREENS:
-            entry = self.item(name.title(), b"pickScreen:",
-                              state=(lcd_enabled and name == active_screen))
-            entry.setRepresentedObject_(name)
-            lcd.addItem_(entry)
-        lcd.addItem_(NSMenuItem.separatorItem())
-        lcd.addItem_(self.item("Off", b"disableLcd:", state=not lcd_enabled))
-        lcd_item = self.item(
-            f"LCD  {active_screen if lcd_enabled else 'off'}", None)
-        menu.addItem_(lcd_item)
-        menu.setSubmenu_forItem_(lcd, lcd_item)
-
-        bindings = self.config.get("bindings", {})
-        keys = NSMenu.alloc().init()
-        keys.setAutoenablesItems_(False)
-        for index in range(1, device.GKEY_COUNT + 1):
-            name = f"G{index}"
-            keys.addItem_(self.item(
-                f"{name:4} {actions.describe(bindings.get(name))}",
-                b"editConfig:"))
-        keys.addItem_(NSMenuItem.separatorItem())
-        keys.addItem_(self.item("Edit bindings…", b"editConfig:"))
-        keys_item = self.item(
-            f"G-keys  {len(bindings)} bound", None)
-        menu.addItem_(keys_item)
-        menu.setSubmenu_forItem_(keys, keys_item)
-
-        menu.addItem_(NSMenuItem.separatorItem())
-        running = cli.agent_loaded()
         menu.addItem_(self.item(
-            "Background agent", b"toggleAgent:", state=running))
-        menu.addItem_(self.item("Open config file", b"editConfig:"))
-        menu.addItem_(self.item("Refresh", b"refresh:"))
+            "G510 connected" if connected else "G510 not found",
+            None, enabled=False))
         menu.addItem_(NSMenuItem.separatorItem())
-        menu.addItem_(self.item("Open G510 window", b"showWindow:"))
+
+        menu.addItem_(self.backlight_item())
+        menu.addItem_(self.display_item())
+        menu.addItem_(self.gkeys_item())
+
+        menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(self.item("Configuration", b"showWindow:"))
         menu.addItem_(self.item("Quit", b"quit:"))
+        for submenu, parent in self.pending_submenus:
+            menu.setSubmenu_forItem_(submenu, parent)
         self.status_item.setMenu_(menu)
+
+    @objc.python_method
+    def backlight_item(self):
+        """Colours as swatches. The hex is noise at a glance; the colour is not."""
+        try:
+            rgb = config.parse_color(self.config.get("backlight", "#ffffff"))
+        except config.ColorError:
+            rgb = (255, 255, 255)
+        current = config.format_color(rgb)
+
+        submenu = NSMenu.alloc().init()
+        submenu.setAutoenablesItems_(False)
+        for name in MENU_COLORS:
+            swatch = config.NAMED_COLORS[name]
+            entry = self.item(name.title(), b"pickColor:",
+                              state=(config.format_color(swatch) == current))
+            entry.setImage_(swatch_image(swatch))
+            entry.setRepresentedObject_(name)
+            submenu.addItem_(entry)
+        submenu.addItem_(NSMenuItem.separatorItem())
+        submenu.addItem_(self.item("Custom Colour…", b"openColorPanel:"))
+
+        brightness = int(self.config.get("brightness", 100))
+        title = "Backlight" if brightness == 100 else f"Backlight  {brightness}%"
+        parent = self.item(title, None)
+        parent.setImage_(swatch_image(rgb))
+        self.pending_submenus.append((submenu, parent))
+        return parent
+
+    @objc.python_method
+    def display_item(self):
+        lcd = self.config.get("lcd", {})
+        enabled = lcd.get("enabled", True)
+        active = lcd.get("screen", "status")
+
+        submenu = NSMenu.alloc().init()
+        submenu.setAutoenablesItems_(False)
+        for name in screens.SCREENS:
+            entry = self.item(SCREEN_NAMES.get(name, name.title()),
+                              b"pickScreen:",
+                              state=(enabled and name == active))
+            entry.setRepresentedObject_(name)
+            submenu.addItem_(entry)
+        submenu.addItem_(NSMenuItem.separatorItem())
+        submenu.addItem_(self.item("Turn Off", b"disableLcd:", state=not enabled))
+
+        showing = SCREEN_NAMES.get(active, active.title()) if enabled else "Off"
+        parent = self.item(f"Display  {showing}", None)
+        self.pending_submenus.append((submenu, parent))
+        return parent
+
+    @objc.python_method
+    def gkeys_item(self):
+        bindings = self.config.get("bindings", {})
+        bank = self.config.get("active_bank", "1")
+
+        submenu = NSMenu.alloc().init()
+        submenu.setAutoenablesItems_(False)
+        bound = [(index, bindings[f"G{index}"])
+                 for index in range(1, device.GKEY_COUNT + 1)
+                 if bindings.get(f"G{index}")]
+        if bound:
+            for index, binding in bound:
+                submenu.addItem_(self.item(
+                    f"G{index}   {actions.describe(binding)}", b"showWindow:"))
+        else:
+            submenu.addItem_(self.item("Nothing bound yet", None, enabled=False))
+        submenu.addItem_(NSMenuItem.separatorItem())
+        submenu.addItem_(self.item("Edit in Configuration…", b"showWindow:"))
+
+        parent = self.item(
+            f"G-keys  M{bank} · {len(bound)}" if bound else f"G-keys  M{bank}",
+            None)
+        self.pending_submenus.append((submenu, parent))
+        return parent
 
     # -- actions -----------------------------------------------------------
 
@@ -237,27 +279,6 @@ class G510Menu(NSObject):
         self.rebuild()
 
     @objc.IBAction
-    def toggleAgent_(self, _sender):
-        if cli.agent_loaded():
-            subprocess.run(["launchctl", "unload", "-w", cli.PLIST_PATH],
-                           capture_output=True)
-        else:
-            try:
-                cli.cmd_start([])
-            except SystemExit as exc:
-                log_failure(str(exc))
-        self.rebuild()
-
-    @objc.IBAction
-    def editConfig_(self, _sender):
-        config.ensure_exists()
-        NSWorkspace.sharedWorkspace().openFile_(config.CONFIG_PATH)
-
-    @objc.IBAction
-    def refresh_(self, _sender):
-        self.rebuild()
-
-    @objc.IBAction
     def showWindow_(self, _sender):
         if getattr(self, "window_controller", None) is not None:
             self.window_controller.show()
@@ -265,20 +286,6 @@ class G510Menu(NSObject):
     @objc.IBAction
     def quit_(self, _sender):
         NSApplication.sharedApplication().terminate_(None)
-
-
-def log_failure(message):
-    """Surface a failure that has nowhere else to go.
-
-    Menu actions run with no terminal attached, so anything raised on the way
-    out of one is lost. An alert is the only place the user will see it.
-    """
-    print(message, flush=True)
-    alert = NSAlert.alloc().init()
-    alert.setMessageText_("G510")
-    alert.setInformativeText_(message)
-    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    alert.runModal()
 
 
 def name_the_app():
