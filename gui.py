@@ -35,10 +35,17 @@ class G510Menu(NSObject):
         self.config = config.load()
         self.status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
             NSVariableStatusItemLength)
+        # Without a name of its own an item is handed a generic "Item-N" slot,
+        # shared with whatever else happens to be running under the same
+        # preference domain - which for a bundle that runs an outside
+        # interpreter is org.python.python, not this app. Name it first: the
+        # remembered position and visible flag are keyed on the name, so
+        # setting it afterwards would re-read them over anything set here.
+        self.status_item.setAutosaveName_("G510StatusItem")
         # macOS remembers a status item as hidden across launches, so say so
         # explicitly rather than trusting the default.
         self.status_item.setVisible_(True)
-        self.set_icon(connected=True)
+        self.set_icon()
         self.rebuild()
         return self
 
@@ -80,7 +87,7 @@ class G510Menu(NSObject):
         """Run a control-layer call, flagging the status item if it fails."""
         try:
             work()
-            self.set_icon(connected=True)
+            self.set_icon()
             return True
         except control.ControlError:
             self.set_icon(connected=False)
@@ -260,20 +267,18 @@ class G510Menu(NSObject):
         NSApplication.sharedApplication().terminate_(None)
 
 
-class AppDelegate(NSObject):
-    """Bring the window back when the Dock icon is clicked."""
+def log_failure(message):
+    """Surface a failure that has nowhere else to go.
 
-    def initWithController_(self, controller):
-        self = objc.super(AppDelegate, self).init()
-        if self is None:
-            return None
-        self.controller = controller
-        return self
-
-    def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, visible):
-        if not visible and self.controller is not None:
-            self.controller.show()
-        return True
+    Menu actions run with no terminal attached, so anything raised on the way
+    out of one is lost. An alert is the only place the user will see it.
+    """
+    print(message, flush=True)
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_("G510")
+    alert.setInformativeText_(message)
+    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    alert.runModal()
 
 
 def name_the_app():
@@ -294,33 +299,52 @@ def name_the_app():
         pass
 
 
-def log_failure(message):
-    """Surface a failure that cannot be raised out of a menu action."""
-    alert = NSAlert.alloc().init()
-    alert.setMessageText_("That did not work")
-    alert.setInformativeText_(message or "No detail available.")
-    alert.addButtonWithTitle_("OK")
-    alert.runModal()
+class AppDelegate(NSObject):
+    """Owns the UI, and builds it only once the app has finished launching.
+
+    A status item created before the run loop starts is accepted but never
+    placed on the menu bar, which is why this waits for the launch callback
+    rather than constructing anything in main().
+    """
+
+    def initWithWindow_(self, wants_window):
+        self = objc.super(AppDelegate, self).init()
+        if self is None:
+            return None
+        self.wants_window = wants_window
+        self.menu = None
+        self.controller = None
+        return self
+
+    def applicationDidFinishLaunching_(self, _notification):
+        print(f"launched; wants_window={self.wants_window!r} argv={sys.argv}", flush=True)
+        self.menu = G510Menu.alloc().init()
+        print("status item:", self.menu.status_item.isVisible(), flush=True)
+        if self.wants_window:
+            try:
+                import window
+                self.controller = window.G510Window.alloc().initWithMenu_(self.menu)
+                self.menu.window_controller = self.controller
+                self.controller.show()
+                print("window shown:", self.controller.window.isVisible(), flush=True)
+            except Exception:
+                import traceback; traceback.print_exc()
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, visible):
+        if not visible and self.controller is not None:
+            self.controller.show()
+            print("window shown:", self.controller.window.isVisible(), flush=True)
+        return True
 
 
 def main():
-    import window
-
     name_the_app()
     app = NSApplication.sharedApplication()
-    # Regular, not Accessory: a crowded or notched menu bar silently drops
-    # overflow status items, so the app needs a Dock icon and a real window.
-    menu_only = "--menu-only" in sys.argv
-    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory if menu_only
-                             else NSApplicationActivationPolicyRegular)
-    menu = G510Menu.alloc().init()
-    controller = None
-    if not menu_only:
-        controller = window.G510Window.alloc().initWithMenu_(menu)
-        menu.window_controller = controller
-        delegate = AppDelegate.alloc().initWithController_(controller)
-        app.setDelegate_(delegate)
-        controller.show()
+    # Accessory: a menu bar item and no Dock icon. The window is still there,
+    # opened from the menu or on launch.
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    delegate = AppDelegate.alloc().initWithWindow_("--no-window" not in sys.argv)
+    app.setDelegate_(delegate)
     app.run()
 
 

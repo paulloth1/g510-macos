@@ -57,7 +57,12 @@ PLIST
 cat > "$BUNDLE/Contents/MacOS/G510" <<LAUNCHER
 #!/bin/sh
 APP="$APP_DIR"
-exec "\$APP/venv/bin/python" "\$APP/gui.py"
+# Run the interpreter as a child, never exec it. LaunchServices ties the menu
+# bar registration to the image it spawned, and a process that replaces that
+# image loses it: the status item is created, reports itself visible, and is
+# never given a slot. Windows survive the exec, which is why only the menu bar
+# item went missing.
+"\$APP/venv/bin/python" "\$APP/gui.py"
 LAUNCHER
 chmod +x "$BUNDLE/Contents/MacOS/G510"
 codesign --force --deep -s - "$BUNDLE" >/dev/null 2>&1 || true

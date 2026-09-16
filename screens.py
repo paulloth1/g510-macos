@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -28,7 +29,27 @@ CLAUDE_REFRESH = 45.0
 # whichever source last changed instead of lagging behind both.
 _util_cache = {"key": None, "value": None}
 MEDIA_REFRESH = 3.0
-NOWPLAYING_CLI = "nowplaying-cli"
+
+# launchd gives the agent a minimal PATH with no Homebrew on it, so the bare
+# name is not enough: unresolved, the media screen silently falls back to a
+# browser window title, which carries no duration and so draws no progress bar.
+NOWPLAYING_CANDIDATES = (
+    "/opt/homebrew/bin/nowplaying-cli",
+    "/usr/local/bin/nowplaying-cli",
+)
+
+
+def _find_nowplaying():
+    found = shutil.which("nowplaying-cli")
+    if found:
+        return found
+    for path in NOWPLAYING_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+NOWPLAYING_CLI = _find_nowplaying()
 
 # Ask only players that are already running, so nothing gets launched.
 _TRACK_SCRIPT = "\n".join([
@@ -187,6 +208,8 @@ def _advance(reading, seconds):
 
 def _from_nowplaying():
     """macOS now-playing info, covering browsers and every other player."""
+    if not NOWPLAYING_CLI:
+        return None
     try:
         result = subprocess.run([NOWPLAYING_CLI, "get-raw"],
                                 capture_output=True, text=True, timeout=3)
