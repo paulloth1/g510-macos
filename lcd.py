@@ -60,11 +60,15 @@ class Canvas:
             Quartz.CGContextStrokeRect(self.ctx, box)
 
     def bar(self, x, y, width, height, fraction):
-        """An outlined progress bar filled to `fraction` (0..1)."""
+        """An outlined progress bar filled to `fraction` (0..1).
+
+        The fill is inset by two on every side, so on a short bar the height
+        has to be floored or there is nothing left to draw.
+        """
         self.rect(x, y, width, height, filled=False)
         inner = max(0, min(1.0, fraction)) * (width - 4)
         if inner >= 1:
-            self.rect(x + 2, y + 2, int(inner), height - 4, filled=True)
+            self.rect(x + 2, y + 2, int(inner), max(1, height - 4), filled=True)
 
     def preview(self, scale=2):
         """An NSImage of the current canvas, for showing the LCD on screen."""

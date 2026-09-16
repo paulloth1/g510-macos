@@ -4,6 +4,7 @@ Grouped cards on a flat background, secondary text for detail, SF Symbols where
 they carry meaning, and a live preview of what the keyboard's LCD is showing.
 """
 import subprocess
+import time
 
 import objc
 from AppKit import (NSAlert, NSApplication, NSBackingStoreBuffered,
@@ -22,6 +23,7 @@ import cli
 import config
 import control
 import device
+import ipc
 import recorder
 import screens
 from lcd import Canvas
@@ -67,6 +69,12 @@ def text(value, size=12, bold=False, secondary=False):
         field.setTextColor_(NSColor.secondaryLabelColor())
     field.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
     return field
+
+
+def _gkey_order(name):
+    """Sort G1..G18 numerically, tolerating junk from a hand-edited config."""
+    digits = name[1:] if name[:1].upper() == "G" else ""
+    return (0, int(digits)) if digits.isdigit() else (1, name)
 
 
 def place(view, x, y, width, height):
@@ -377,7 +385,11 @@ class G510Window(NSObject):
         try:
             self.refresh()
         except Exception:
-            self.refresh_preview()
+            # Nothing may escape into the run loop from a timer callback.
+            try:
+                self.refresh_preview()
+            except Exception:
+                pass
 
     @objc.python_method
     def refresh_preview(self):
@@ -391,12 +403,13 @@ class G510Window(NSObject):
     @objc.python_method
     def refresh(self):
         self.config = config.load()
-        connected = control.present()
+        running = control.daemon_running()
+        connected = running or device.find_path() is not None
         self.device_title.setStringValue_(
             "G510 Gaming Keyboard" if connected else "No G510 found")
         if connected:
             detail = "Connected"
-            if control.daemon_running():
+            if running:
                 detail += " · agent holds the device"
             self.device_detail.setTextColor_(NSColor.secondaryLabelColor())
         else:
@@ -414,7 +427,7 @@ class G510Window(NSObject):
             self.profile_label.setStringValue_(f"{app}")
             self.profile_detail.setStringValue_(
                 f"{len(profile)} override" + ("s" if len(profile) != 1 else "")
-                + ": " + ", ".join(sorted(profile, key=lambda k: int(k[1:]))))
+                + ": " + ", ".join(sorted(profile, key=_gkey_order)))
         else:
             self.profile_label.setStringValue_(app or "No frontmost app")
             self.profile_detail.setStringValue_(
@@ -450,10 +463,10 @@ class G510Window(NSObject):
         if active in config.BANKS:
             self.bank_picker.setSelectedSegment_(config.BANKS.index(active))
 
-        running = cli.agent_loaded()
-        self.agent_button.setTitle_("Stop" if running else "Start")
+        loaded = self.agent_loaded_cached()
+        self.agent_button.setTitle_("Stop" if loaded else "Start")
         self.agent_label.setStringValue_(
-            "Running, and starts at login" if running
+            "Running, and starts at login" if loaded
             else "Not running - G-keys will not do anything")
 
         posting = actions.can_post_events()
@@ -475,7 +488,7 @@ class G510Window(NSObject):
         self.table.reloadData()
 
     @objc.python_method
-    def mutate(self, apply):
+    def mutate(self, apply):  # noqa: D401
         """Re-read, change, write back.
 
         The agent and the CLI write this file too, and the window holds its
@@ -490,6 +503,21 @@ class G510Window(NSObject):
         if self.menu is not None:
             self.menu.rebuild()
         return fresh
+
+    @objc.python_method
+    def agent_loaded_cached(self, max_age=5.0):
+        """launchctl costs ~8ms and the answer rarely changes; cache it."""
+        now = time.time()
+        cached = getattr(self, "_agent_cache", None)
+        if cached and now - cached[0] < max_age:
+            return cached[1]
+        value = cli.agent_loaded()
+        self._agent_cache = (now, value)
+        return value
+
+    @objc.python_method
+    def invalidate_agent_cache(self):
+        self._agent_cache = None
 
     @objc.python_method
     def push_config(self):
@@ -533,8 +561,9 @@ class G510Window(NSObject):
 
     @objc.python_method
     def apply_color(self, rgb):
+        brightness = self.config.get("brightness", 100)
         try:
-            control.set_backlight(rgb)
+            control.set_backlight(config.apply_brightness(rgb, brightness))
         except control.ControlError:
             pass
         self.mutate(lambda s: s.update(backlight=config.format_color(rgb)))
@@ -672,7 +701,7 @@ class G510Window(NSObject):
         field.setPlaceholderString_(TYPE_HINTS.get(binding.get("type", "app"), ""))
         accessory.addSubview_(field)
 
-        self.edit_popup, self.edit_field = popup, field
+        self.edit_field = field
         alert.setAccessoryView_(accessory)
         alert.window().setInitialFirstResponder_(field)
         if alert.runModal() == 1000:          # Save
@@ -716,6 +745,7 @@ class G510Window(NSObject):
 
     @objc.IBAction
     def toggleAgent_(self, _sender):
+        self.invalidate_agent_cache()
         if cli.agent_loaded():
             subprocess.run(["launchctl", "unload", "-w", cli.PLIST_PATH],
                            capture_output=True)
@@ -724,6 +754,7 @@ class G510Window(NSObject):
                 cli.cmd_start([])
             except SystemExit:
                 pass
+        self.invalidate_agent_cache()
         self.refresh()
 
     @objc.IBAction

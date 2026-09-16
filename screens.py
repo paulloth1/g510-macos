@@ -15,7 +15,6 @@ from device import LCD_WIDTH
 from lcd import Canvas
 
 _CPU_COUNT = os.cpu_count() or 1
-_PAGE_SIZE = 16384          # Apple Silicon VM page size
 _mem_cache = {"when": 0.0, "value": 0.0}
 _batt_cache = {"when": 0.0, "value": None}
 _claude_cache = {"when": 0.0, "value": None}
@@ -269,18 +268,28 @@ def claude_utilization():
     """
     key = tuple(_mtime(path) for path in (CLAUDE_CONFIG, CLAUDE_STATUSLINE))
     if key == _util_cache["key"] and _util_cache["value"]:
-        return _util_cache["value"]
+        return _mark_stale(_util_cache["value"])
 
     candidates = [reading for reading in (_from_claude_config(),
                                           _from_statusline()) if reading]
     if candidates:
         best = max(candidates, key=lambda reading: reading["fetched"])
-        best["stale"] = (time.time() - best["fetched"]) > 600
     else:
         best = {"five_hour": None, "seven_day": None, "resets_at": None,
                 "context": None, "stale": True, "source": None, "fetched": 0.0}
     _util_cache.update(key=key, value=best)
-    return best
+    return _mark_stale(best)
+
+
+def _mark_stale(reading):
+    """Age the reading now, not when it was cached.
+
+    If neither source file changes again the cached entry is returned for
+    ever, so staleness has to be judged on the way out or it can never become
+    true.
+    """
+    reading["stale"] = (time.time() - (reading.get("fetched") or 0)) > 600
+    return reading
 
 
 def _mtime(path):
@@ -393,7 +402,8 @@ def screen_gkeys(canvas, state):
     last = state.get("last_gkey")
     if last:
         canvas.text(last, 2, 14, 18)
-        canvas.text(state.get("last_action", "unbound"), 2, 33, 9)
+        canvas.text(_fit(canvas, state.get("last_action", "unbound"), 9),
+                    2, 32, 9)
     else:
         canvas.text("press a G-key", 2, 20, 11)
 
@@ -456,7 +466,7 @@ def screen_media(canvas, _state):
     if artist:
         canvas.text(_fit(canvas, artist, 10), 2, 26, 10)
     if duration:
-        canvas.bar(2, 39, LCD_WIDTH - 4, 4,
+        canvas.bar(2, 38, LCD_WIDTH - 4, 5,
                    (track.get("elapsed") or 0) / duration)
 
 

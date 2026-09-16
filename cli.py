@@ -1,4 +1,5 @@
 """Command line front end for the G510 tools."""
+import collections
 import os
 import subprocess
 import sys
@@ -48,6 +49,18 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
 colours: """ + ", ".join(sorted(config.NAMED_COLORS))
 
 
+def _gkey_order(name):
+    """Sort G1..G18 numerically, tolerating junk from a hand-edited config."""
+    digits = name[1:] if name[:1].upper() == "G" else ""
+    return (0, int(digits)) if digits.isdigit() else (1, name)
+
+
+def save_config(settings):
+    """Persist, or stop with the reason. A refused save is silent otherwise."""
+    if not config.save(settings):
+        sys.exit(config.last_error or f"Could not write {config.CONFIG_PATH}")
+
+
 def guard(work):
     """Run a control-layer call, turning failures into clean CLI errors."""
     try:
@@ -82,7 +95,7 @@ def cmd_color(args):
         sys.exit(str(exc))
     settings = config.load()
     settings["backlight"] = config.format_color(rgb)
-    config.save(settings)
+    save_config(settings)
     guard(lambda: control.set_backlight(config.effective_color(settings)))
     reload_agent()
     brightness = settings.get("brightness", 100)
@@ -135,12 +148,12 @@ def cmd_watch(args):
 
 
 def reload_agent():
-    """Tell a running agent to re-read the config file."""
-    if control.daemon_running():
-        try:
+    """Tell a running agent to re-read the config file, if one is there."""
+    try:
+        if control.daemon_running():
             ipc.request({"cmd": "reload"})
-        except OSError:
-            pass
+    except OSError:
+        pass
 
 
 def cmd_lcd(args):
@@ -156,7 +169,7 @@ def cmd_lcd(args):
     lcd = settings.setdefault("lcd", {})
     if args[0] == "clear":
         lcd["enabled"] = False
-        config.save(settings)
+        save_config(settings)
         reload_agent()
         guard(control.clear_lcd)
         print("LCD cleared (auto-refresh off; re-enable with g510 lcd status)")
@@ -164,14 +177,14 @@ def cmd_lcd(args):
         if len(args) < 2:
             sys.exit('Give up to 3 lines, e.g. g510 lcd text "hello" "there"')
         lcd["enabled"] = False
-        config.save(settings)
+        save_config(settings)
         reload_agent()
         guard(lambda: control.show_text(list(args[1:4])))
         print("LCD updated (auto-refresh off; re-enable with g510 lcd status)")
     elif args[0] in screens.SCREENS:
         lcd["screen"] = args[0]
         lcd["enabled"] = True
-        config.save(settings)
+        save_config(settings)
         reload_agent()
         guard(lambda: control.show_screen(args[0]))
         print(f"LCD -> {args[0]}")
@@ -201,7 +214,7 @@ def cmd_bind(args):
     bindings = settings.setdefault("bindings", {})
     if kind == "none":
         bindings.pop(key, None)
-        config.save(settings)
+        save_config(settings)
         print(f"{key} cleared")
         return
     value = " ".join(args[2:])
@@ -218,7 +231,7 @@ def cmd_bind(args):
             sys.exit(str(exc))
     field, content = shapes[kind]
     bindings[key] = {"type": kind, field: content}
-    config.save(settings)
+    save_config(settings)
     reload_agent()
     print(f"{key} -> {actions.describe(bindings[key])}")
 
@@ -240,7 +253,7 @@ def cmd_brightness(args):
     if not 0 <= value <= 100:
         sys.exit("Brightness must be between 0 and 100")
     settings["brightness"] = value
-    config.save(settings)
+    save_config(settings)
     guard(lambda: control.set_backlight(config.effective_color(settings)))
     reload_agent()
     print(f"brightness -> {value}%  "
@@ -274,7 +287,7 @@ def cmd_record(args):
     settings = config.load()
     settings.setdefault("macros", {})[name] = steps
     settings.setdefault("bindings", {})[key] = {"type": "macro", "name": name}
-    config.save(settings)
+    save_config(settings)
     reload_agent()
     print(f"\n{key} -> macro {name!r} ({len(steps)} steps)")
 
@@ -291,7 +304,7 @@ def cmd_macros(args):
         for key, binding in list(settings.get("bindings", {}).items()):
             if binding.get("type") == "macro" and binding.get("name") == name:
                 settings["bindings"].pop(key)
-        config.save(settings)
+        save_config(settings)
         reload_agent()
         print(f"deleted macro {name!r}")
         return
@@ -313,7 +326,7 @@ def cmd_profile(args):
             return
         for app, bindings in profiles.items():
             print(f"  {app}")
-            for key in sorted(bindings, key=lambda k: int(k[1:])):
+            for key in sorted(bindings, key=_gkey_order):
                 print(f"    {key:4} {actions.describe(bindings[key])}")
         return
     if len(args) < 3:
@@ -327,7 +340,7 @@ def cmd_profile(args):
         bindings.pop(key, None)
         if not bindings:
             profiles.pop(app, None)
-        config.save(settings)
+        save_config(settings)
         reload_agent()
         print(f"{app}: {key} cleared")
         return
@@ -343,7 +356,7 @@ def cmd_profile(args):
         except actions.ActionError as exc:
             sys.exit(str(exc))
     bindings[key] = {"type": kind, shapes[kind]: value}
-    config.save(settings)
+    save_config(settings)
     reload_agent()
     print(f"{app}: {key} -> {actions.describe(bindings[key])}")
 
@@ -363,12 +376,15 @@ def cmd_bank(args):
     if name not in config.BANKS:
         sys.exit(f"Bank must be 1, 2 or 3, not {args[0]!r}")
     if control.daemon_running():
-        reply = ipc.request({"cmd": "set_bank", "bank": name})
+        try:
+            reply = ipc.request({"cmd": "set_bank", "bank": name})
+        except OSError as exc:
+            sys.exit(f"The agent is not responding ({exc}). Try: g510 start")
         if not reply.get("ok"):
             sys.exit(reply.get("error", "agent refused"))
     else:
         config.set_bank(settings, name)
-        config.save(settings)
+        save_config(settings)
         guard(lambda: control.set_mkeys([f"m{name}"]))
     print(f"active bank -> M{name}")
 
@@ -406,7 +422,7 @@ def cmd_switch(args):
             sys.exit("Action must be bank:N, screen:<name>, color:<colour> or none")
         current[position] = value
     settings["game_switch"] = current
-    config.save(settings)
+    save_config(settings)
     reload_agent()
     print(f"switch {position} -> {current.get(position) or 'nothing'}")
 
@@ -414,7 +430,10 @@ def cmd_switch(args):
 def cmd_next(_args):
     """Advance the LCD to the next screen in the cycle."""
     if control.daemon_running():
-        reply = ipc.request({"cmd": "next_screen"})
+        try:
+            reply = ipc.request({"cmd": "next_screen"})
+        except OSError as exc:
+            sys.exit(f"The agent is not responding ({exc}). Try: g510 start")
         if reply.get("ok"):
             print(f"LCD -> {reply.get('screen')}")
             return
@@ -428,7 +447,7 @@ def cmd_next(_args):
         index = -1
     choice = cycle[(index + 1) % len(cycle)]
     lcd["screen"], lcd["enabled"] = choice, True
-    config.save(settings)
+    save_config(settings)
     guard(lambda: control.show_screen(choice))
     print(f"LCD -> {choice}")
 
@@ -519,7 +538,7 @@ def cmd_status(_args):
     if os.path.exists(LOG_PATH):
         print("  recent:")
         with open(LOG_PATH) as handle:
-            for line in handle.readlines()[-6:]:
+            for line in collections.deque(handle, maxlen=6):
                 print("    " + line.rstrip())
 
 

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 import objc
-from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
+from AppKit import (NSAlert, NSApplication, NSApplicationActivationPolicyAccessory,
                     NSApplicationActivationPolicyRegular, NSColor,
                     NSColorPanel, NSImage, NSMenu, NSMenuItem, NSStatusBar,
                     NSVariableStatusItemLength, NSWorkspace)
@@ -64,13 +64,6 @@ class G510Menu(NSObject):
         button.setToolTip_("G510 keyboard"
                            if connected else "G510 keyboard not found")
 
-    @objc.python_method
-    def flash_open(self):
-        """Pop the menu once at launch so its position is obvious."""
-        button = self.status_item.button()
-        if button is not None:
-            button.performClick_(None)
-
     # -- helpers -----------------------------------------------------------
 
     @objc.python_method
@@ -94,14 +87,24 @@ class G510Menu(NSObject):
             return False
 
     @objc.python_method
-    def push_config(self):
-        """Save, then tell a running daemon to pick the change up."""
-        config.save(self.config)
+    def mutate(self, apply):
+        """Re-read, change, write back.
+
+        The menu's cached config is only refreshed when the menu is rebuilt,
+        so it can be minutes old. Writing it wholesale would revert a bank the
+        keyboard switched or a macro MR recorded in the meantime.
+        """
+        fresh = config.load()
+        apply(fresh)
+        if not config.save(fresh):
+            return fresh
+        self.config = fresh
         if ipc.is_running():
             try:
                 ipc.request({"cmd": "reload"})
             except OSError:
                 pass
+        return fresh
 
     # -- menu construction -------------------------------------------------
 
@@ -206,24 +209,23 @@ class G510Menu(NSObject):
 
     @objc.python_method
     def apply_color(self, rgb):
-        self.attempt(lambda: control.set_backlight(rgb))
-        self.config["backlight"] = config.format_color(rgb)
-        self.push_config()
+        brightness = self.config.get("brightness", 100)
+        self.attempt(lambda: control.set_backlight(
+            config.apply_brightness(rgb, brightness)))
+        self.mutate(lambda s: s.update(backlight=config.format_color(rgb)))
         self.rebuild()
 
     @objc.IBAction
     def pickScreen_(self, sender):
         name = sender.representedObject()
-        self.config.setdefault("lcd", {})["screen"] = name
-        self.config["lcd"]["enabled"] = True
-        self.push_config()
+        self.mutate(lambda s: s.setdefault("lcd", {}).update(
+            screen=name, enabled=True))
         self.attempt(lambda: control.show_screen(name))
         self.rebuild()
 
     @objc.IBAction
     def disableLcd_(self, _sender):
-        self.config.setdefault("lcd", {})["enabled"] = False
-        self.push_config()
+        self.mutate(lambda s: s.setdefault("lcd", {}).update(enabled=False))
         self.attempt(control.clear_lcd)
         self.rebuild()
 
@@ -233,17 +235,16 @@ class G510Menu(NSObject):
             subprocess.run(["launchctl", "unload", "-w", cli.PLIST_PATH],
                            capture_output=True)
         else:
-            cli.cmd_start([])
+            try:
+                cli.cmd_start([])
+            except SystemExit as exc:
+                log_failure(str(exc))
         self.rebuild()
 
     @objc.IBAction
     def editConfig_(self, _sender):
         config.ensure_exists()
         NSWorkspace.sharedWorkspace().openFile_(config.CONFIG_PATH)
-
-    @objc.IBAction
-    def flashOpen_(self, _sender):
-        self.flash_open()
 
     @objc.IBAction
     def refresh_(self, _sender):
@@ -291,6 +292,15 @@ def name_the_app():
             info["CFBundleDisplayName"] = "G510"
     except Exception:
         pass
+
+
+def log_failure(message):
+    """Surface a failure that cannot be raised out of a menu action."""
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_("That did not work")
+    alert.setInformativeText_(message or "No detail available.")
+    alert.addButtonWithTitle_("OK")
+    alert.runModal()
 
 
 def main():
