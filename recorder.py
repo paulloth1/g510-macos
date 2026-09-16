@@ -9,7 +9,7 @@ import time
 
 import Quartz
 
-from actions import KEY_CODES, MODIFIER_FLAGS
+from actions import KEY_CODES
 
 # code -> name, preferring the first spelling in KEY_CODES
 CODE_NAMES = {}
@@ -79,6 +79,10 @@ class Recorder:
     def run(self, timeout=120.0):
         """Block until Escape, the step limit, or the timeout. Returns steps."""
         mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        # Publish the loop before the tap exists: a stop() arriving in between
+        # would otherwise be a silent no-op, leaving the tap listening for the
+        # full timeout after the user cancelled.
+        self.loop = Quartz.CFRunLoopGetCurrent()
         self.tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
             Quartz.kCGEventTapOptionListenOnly, mask, self._callback, None)
@@ -87,8 +91,7 @@ class Recorder:
                 "Could not watch the keyboard. Accessibility permission is "
                 "needed - run: g510 permissions")
         source = Quartz.CFMachPortCreateRunLoopSource(None, self.tap, 0)
-        loop = Quartz.CFRunLoopGetCurrent()
-        self.loop = loop
+        loop = self.loop
         Quartz.CFRunLoopAddSource(loop, source, Quartz.kCFRunLoopCommonModes)
         Quartz.CGEventTapEnable(self.tap, True)
         Quartz.CFRunLoopRunInMode(Quartz.kCFRunLoopDefaultMode, timeout, False)

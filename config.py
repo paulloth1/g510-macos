@@ -6,6 +6,7 @@ directory, and is plain JSON so it can be edited by hand.
 import copy
 import json
 import os
+import tempfile
 
 CONFIG_DIR = os.path.expanduser("~/.config/g510")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -47,8 +48,13 @@ DEFAULTS = {
 
 
 def _merge(base, override):
-    """Recursive dict merge, so a partial config file still gets all defaults."""
-    result = dict(base)
+    """Recursive dict merge, so a partial config file still gets all defaults.
+
+    The base is deep-copied: callers mutate nested dicts like `lcd` and
+    `macros` in place, and sharing them with DEFAULTS would quietly stop the
+    defaults being the defaults for the rest of the process.
+    """
+    result = copy.deepcopy(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _merge(result[key], value)
@@ -98,16 +104,18 @@ def load():
     global last_error, _last_good
     if not os.path.exists(CONFIG_PATH):
         last_error = None
-        return _migrate(dict(DEFAULTS))
+        return _migrate(copy.deepcopy(DEFAULTS))
     try:
         with open(CONFIG_PATH) as handle:
             settings = _migrate(_merge(DEFAULTS, json.load(handle)))
     except (json.JSONDecodeError, ValueError) as exc:
         last_error = f"{CONFIG_PATH} is not valid JSON ({exc})"
-        return copy.deepcopy(_last_good) if _last_good else _migrate(dict(DEFAULTS))
+        return (copy.deepcopy(_last_good) if _last_good
+                else _migrate(copy.deepcopy(DEFAULTS)))
     except OSError as exc:
         last_error = f"Could not read {CONFIG_PATH}: {exc}"
-        return copy.deepcopy(_last_good) if _last_good else _migrate(dict(DEFAULTS))
+        return (copy.deepcopy(_last_good) if _last_good
+                else _migrate(copy.deepcopy(DEFAULTS)))
     last_error = None
     _last_good = copy.deepcopy(settings)
     return settings
@@ -142,11 +150,21 @@ def save(config, force=False):
         payload["banks"] = banks
     payload.pop("bindings", None)
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-    os.replace(tmp, CONFIG_PATH)
+    # A unique temp file per write: the agent, the CLI and the GUI all save
+    # here, and a shared name would let two writers interleave into the same
+    # file and defeat the atomic rename.
+    handle_fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-")
+    try:
+        with os.fdopen(handle_fd, "w") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(tmp, CONFIG_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return True
 
 

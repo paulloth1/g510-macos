@@ -3,6 +3,8 @@
 Every caller goes through here: if the daemon is running it owns the only HID
 handle, so requests are forwarded to it; otherwise we open the device directly.
 """
+import time
+
 import device
 import ipc
 import screens
@@ -26,7 +28,12 @@ def _direct(work):
 
 
 def _via_daemon(payload):
-    reply = ipc.request(payload)
+    """Ask the agent to act. The agent may vanish between check and call."""
+    try:
+        reply = ipc.request(payload)
+    except OSError as exc:
+        raise ControlError(f"Could not reach the agent ({exc}). "
+                           "It may have stopped; try: g510 start")
     if not reply.get("ok"):
         raise ControlError(reply.get("error", "daemon refused the request"))
     return reply
@@ -124,7 +131,6 @@ def watch_gkeys():
         raise ControlError(str(exc))
     except OSError as exc:
         raise ControlError(f"Could not open the keyboard ({exc})")
-    import time
     keyboard.set_nonblocking(True)
     pressed = set()
     try:

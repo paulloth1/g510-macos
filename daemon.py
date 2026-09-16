@@ -41,7 +41,11 @@ class Daemon:
         self.last_app_check = 0.0
         self.current_app = None
         self.base_color = config.effective_color(self.config)
-        self.lock = threading.Lock()      # guards every device touch
+        # Reentrant: a socket command already holds this when it reaches
+        # select_bank, which takes it again via show_bank_led.
+        self.lock = threading.RLock()     # guards every device touch
+        self.config_lock = threading.Lock()   # serialises load/apply/save
+        self.record_lock = threading.Lock()   # guards the recorder handoff
         self.watchers = []
         self.watchers_lock = threading.Lock()
         self.server = ipc.Server(self.handle_request)
@@ -53,32 +57,39 @@ class Daemon:
 
     def connect(self):
         try:
-            self.keyboard = device.G510()
-            self.keyboard.set_nonblocking(True)
+            keyboard = device.G510()
+            keyboard.set_nonblocking(True)
         except (device.DeviceNotFound, OSError):
-            self.keyboard = None
             return False
-        try:
-            self.keyboard.silence_gkey_scancodes()
-        except OSError as exc:
-            log(f"could not silence G-key scancodes: {exc}")
-        if self.config.get("restore_backlight_on_start", True):
-            self.keyboard.set_backlight(self.base_color)
-        self.show_bank_led()
+        # Publish and set up under the lock, so a socket thread cannot reach
+        # a half-configured handle.
+        with self.lock:
+            self.keyboard = keyboard
+            try:
+                keyboard.silence_gkey_scancodes()
+            except OSError as exc:
+                log(f"could not silence G-key scancodes: {exc}")
+            if self.config.get("restore_backlight_on_start", True):
+                keyboard.set_backlight(self.base_color)
+            self.show_bank_led()
         self.state = {}
         log("connected to G510")
         return True
 
     def drop(self, reason):
+        """Let go of the keyboard. Holds the lock: a socket thread may be
+        part way through a call on the handle we are about to close."""
         log(f"lost keyboard ({reason}); waiting for it to come back")
-        try:
-            if self.keyboard:
-                self.keyboard.close()
-        except Exception:
-            pass
-        self.keyboard = None
+        with self.lock:
+            keyboard, self.keyboard = self.keyboard, None
+            try:
+                if keyboard:
+                    keyboard.close()
+            except Exception:
+                pass
         self.pressed = set()
         self.lcd_pressed = set()
+        self.mode_pressed = set()
 
     # -- control socket ----------------------------------------------------
 
@@ -89,11 +100,34 @@ class Daemon:
             yield from self.stream_gkeys()
             return
         try:
-            yield self.run_command(command, payload)
-        except device.DeviceNotFound:
-            yield {"ok": False, "error": "keyboard not connected"}
+            reply = self.run_command(command, payload)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            yield {"ok": False, "error": str(exc)}
+            return
+        # Commands that touch the config file run outside the device lock,
+        # so a save cannot stall G-key polling.
+        deferred = reply.pop("deferred", None)
+        try:
+            if deferred == "reload":
+                self.reload_config()
+            elif deferred == "next_screen":
+                reply["screen"] = self.advance_screen(1)
+            elif deferred == "set_bank":
+                reply["bank"] = self.select_bank(reply["bank"])
         except (OSError, ValueError, KeyError) as exc:
             yield {"ok": False, "error": str(exc)}
+            return
+        yield reply
+
+    def reload_config(self):
+        """Re-read the config and re-apply everything it drives."""
+        self.config = config.load()
+        self.base_color = config.effective_color(self.config)
+        if self.config.get("restore_backlight_on_start", True):
+            with self.lock:
+                if self.keyboard is not None:
+                    self.keyboard.set_backlight(self.active_color())
+        self.show_bank_led()
 
     def run_command(self, command, payload):
         with self.lock:
@@ -116,7 +150,11 @@ class Daemon:
                 self.keyboard.set_mkeys(payload.get("names", []))
                 return {"ok": True}
             if command == "send_lcd":
-                self.keyboard._dev.write(bytes.fromhex(payload["frame"]))
+                frame = bytes.fromhex(payload["frame"])
+                if len(frame) != device.LCD_FRAME_LEN:
+                    return {"ok": False,
+                            "error": f"frame must be {device.LCD_FRAME_LEN} bytes"}
+                self.keyboard._dev.write(frame)
                 return {"ok": True}
             if command == "silence_gkeys":
                 self.keyboard.silence_gkey_scancodes()
@@ -129,21 +167,17 @@ class Daemon:
                         "manufacturer": self.keyboard._dev.get_manufacturer_string(),
                         "product": self.keyboard._dev.get_product_string()}
             if command == "reload":
-                self.config = config.load()
-                self.base_color = config.effective_color(self.config)
-                if self.config.get("restore_backlight_on_start", True):
-                    self.keyboard.set_backlight(self.active_color())
-                self.show_bank_led()
-                return {"ok": True}
+                return {"ok": True, "deferred": "reload"}
             if command == "next_screen":
-                return {"ok": True, "screen": self.advance_screen(1)}
+                return {"ok": True, "deferred": "next_screen"}
             if command == "set_bank":
-                return {"ok": True, "bank": self.select_bank(payload["bank"])}
+                return {"ok": True, "deferred": "set_bank",
+                        "bank": str(payload["bank"])}
             return {"ok": False, "error": f"unknown command {command!r}"}
 
     def stream_gkeys(self):
         """Feed G-key events to one watching client until it disconnects."""
-        events = queue.Queue()
+        events = queue.Queue(maxsize=256)
         with self.watchers_lock:
             self.watchers.append(events)
         try:
@@ -158,9 +192,13 @@ class Daemon:
                     self.watchers.remove(events)
 
     def broadcast(self, message):
+        """Fan out to watchers, dropping for any client that stopped reading."""
         with self.watchers_lock:
             for events in self.watchers:
-                events.put(message)
+                try:
+                    events.put_nowait(message)
+                except queue.Full:
+                    pass
 
     # -- work --------------------------------------------------------------
 
@@ -232,11 +270,13 @@ class Daemon:
         The CLI and GUI write this file too. Saving our own long-held copy
         would silently revert whatever they changed since we last read it.
         """
-        fresh = config.load()
-        apply(fresh)
-        config.save(fresh)
-        self.config = fresh
-        return fresh
+        with self.config_lock:
+            fresh = config.load()
+            apply(fresh)
+            if not config.save(fresh):
+                log(f"config not saved: {config.last_error}")
+            self.config = fresh
+            return fresh
 
     def select_bank(self, name):
         """Switch the active binding bank and light its M-key."""
@@ -247,8 +287,9 @@ class Daemon:
 
     def show_bank_led(self):
         active = str(self.config.get("active_bank", "1"))
-        if self.keyboard is not None:
-            self.keyboard.set_mkeys([f"m{active}"])
+        with self.lock:
+            if self.keyboard is not None:
+                self.keyboard.set_mkeys([f"m{active}"])
 
     def advance_screen(self, step=1):
         """Move to the next screen in the configured cycle."""
@@ -276,6 +317,14 @@ class Daemon:
 
     def fire_mode_key(self, name):
         """M1/M2/M3 pick a bank, MR drives recording, GAME is the switch."""
+        try:
+            self._run_mode_key(name)
+        except OSError:
+            raise
+        except Exception as exc:
+            log(f"{name} failed: {type(exc).__name__}: {exc}")
+
+    def _run_mode_key(self, name):
         if name in ("M1", "M2", "M3"):
             if self.record_state:
                 return
@@ -287,17 +336,26 @@ class Daemon:
 
     def fire_game_switch(self, engaged):
         """Run whatever the joystick switch is configured to do."""
+        log(f"game switch {'on' if engaged else 'off'}")
+        try:
+            self._run_game_switch(engaged)
+        except OSError:
+            raise
+        except Exception as exc:
+            log(f"  game switch failed: {type(exc).__name__}: {exc}")
+
+    def _run_game_switch(self, engaged):
         action = (self.config.get("game_switch") or {}).get(
             "on" if engaged else "off")
-        log(f"game switch {'on' if engaged else 'off'}")
         if not action:
             return
         if isinstance(action, dict):
-            try:
-                actions.dispatch(action, self.config.get("macros"))
-            except actions.ActionError as exc:
-                log(f"  game switch failed: {exc}")
-        elif action.startswith("bank:"):
+            actions.dispatch(action, self.config.get("macros"))
+            return
+        if not isinstance(action, str):
+            log(f"  {action!r} is not a valid action")
+            return
+        if action.startswith("bank:"):
             self.select_bank(action.split(":", 1)[1])
         elif action.startswith("screen:"):
             wanted = action.split(":", 1)[1]
@@ -321,42 +379,55 @@ class Daemon:
             if not actions.can_post_events():
                 log("MR pressed but Accessibility is not granted")
                 return
-            self.record_state = "await_key"
-            self.record_target = None
+            with self.record_lock:
+                self.record_state = "await_key"
+                self.record_target = None
             self.last_lcd = 0.0
             log("MR -> waiting for a G-key")
         elif self.record_state == "await_key":
-            self.record_state = None
+            with self.record_lock:
+                self.record_state = None
             self.last_lcd = 0.0
             log("MR -> recording cancelled")
         else:
             self.finish_recording()
 
     def start_recording(self, key):
-        self.record_target = key
-        self.record_state = "recording"
+        active = recorder.Recorder()
+        with self.record_lock:
+            self.record_target = key
+            self.record_state = "recording"
+            self.recorder = active
         self.last_lcd = 0.0
         log(f"recording macro onto {key}")
-        self.recorder = recorder.Recorder()
-        thread = threading.Thread(target=self._record_thread, daemon=True)
+        thread = threading.Thread(target=self._record_thread, args=(active,),
+                                  daemon=True)
         thread.start()
 
-    def _record_thread(self):
+    def _record_thread(self, active):
+        """Run the event tap. `active` is passed in rather than read off self,
+        which the main loop may have cleared by the time this runs."""
         try:
-            self.recorder.run(timeout=300.0)
+            active.run(timeout=300.0)
         except recorder.RecordingError as exc:
             log(f"recording failed: {exc}")
+        except Exception as exc:
+            log(f"recording failed: {type(exc).__name__}: {exc}")
         finally:
-            if self.record_state == "recording":
-                self.finish_recording()
+            self.finish_recording()
 
     def finish_recording(self):
-        steps = list(self.recorder.steps) if self.recorder else []
-        key, self.record_target = self.record_target, None
-        self.record_state = None
-        if self.recorder:
-            self.recorder.stop()
-            self.recorder = None
+        """Save whatever was captured. Safe to call from either thread, and
+        from both: the second call finds nothing to do."""
+        with self.record_lock:
+            if self.record_state != "recording":
+                return
+            active, self.recorder = self.recorder, None
+            key, self.record_target = self.record_target, None
+            self.record_state = None
+        steps = list(active.steps) if active else []
+        if active:
+            active.stop()
         self.last_lcd = 0.0
         if not steps or not key:
             log("recording discarded (nothing captured)")
@@ -373,14 +444,22 @@ class Daemon:
 
     def fire_lcd_key(self, name):
         """Run whatever the display key is configured to do."""
+        try:
+            self._run_lcd_key(name)
+        except OSError:
+            raise                 # device trouble belongs to the main loop
+        except Exception as exc:
+            log(f"{name} failed: {type(exc).__name__}: {exc}")
+
+    def _run_lcd_key(self, name):
         action = (self.config.get("lcd_keys") or {}).get(name)
         if not action:
             return
         if isinstance(action, dict):
-            try:
-                actions.dispatch(action, self.config.get("macros"))
-            except actions.ActionError as exc:
-                log(f"{name} failed: {exc}")
+            actions.dispatch(action, self.config.get("macros"))
+            return
+        if not isinstance(action, str):
+            log(f"{name}: {action!r} is not a valid action")
             return
         if action == "next":
             self.advance_screen(1)
@@ -400,17 +479,24 @@ class Daemon:
                 log(f"{name} -> LCD {wanted}")
 
     def fire(self, name):
-        binding = self.bindings.get(name)
+        """Run a G-key's binding.
+
+        The config is meant to be hand-edited, so a binding can be any shape
+        at all - a bare string, a dict missing its field, a macro that is a
+        list of strings. None of those may kill the agent, so everything from
+        describing the binding onwards is guarded.
+        """
         self.state["last_gkey"] = name
-        self.state["last_action"] = actions.describe(binding)
-        if not binding:
-            log(f"{name} pressed (unbound)")
-            return
-        log(f"{name} -> {actions.describe(binding)}")
         try:
+            binding = self.bindings.get(name)
+            self.state["last_action"] = actions.describe(binding)
+            if not binding:
+                log(f"{name} pressed (unbound)")
+                return
+            log(f"{name} -> {actions.describe(binding)}")
             actions.dispatch(binding, self.config.get("macros"))
-        except actions.ActionError as exc:
-            log(f"  binding failed: {exc}")
+        except Exception as exc:
+            log(f"  {name} failed: {type(exc).__name__}: {exc}")
 
     def refresh_lcd(self, now):
         lcd_config = self.config.get("lcd", {})
@@ -422,8 +508,8 @@ class Daemon:
         if self.record_state:
             self.state["record_state"] = self.record_state
             self.state["record_target"] = self.record_target
-            self.state["record_steps"] = (
-                len(self.recorder.steps) if self.recorder else 0)
+            active = self.recorder
+            self.state["record_steps"] = len(active.steps) if active else 0
             pixels = screens.render("record", self.state)
         else:
             self.state.pop("record_state", None)
@@ -469,15 +555,17 @@ class Daemon:
     def shutdown(self):
         log("g510 daemon stopping")
         self.server.stop()
-        if self.keyboard:
-            try:
-                self.keyboard.clear_lcd()
-            except Exception:
-                pass
-            try:
-                self.keyboard.close()
-            except Exception:
-                pass
+        with self.lock:
+            keyboard, self.keyboard = self.keyboard, None
+            if keyboard:
+                try:
+                    keyboard.clear_lcd()
+                except Exception:
+                    pass
+                try:
+                    keyboard.close()
+                except Exception:
+                    pass
 
 
 def log(message):

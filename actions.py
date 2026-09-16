@@ -97,12 +97,19 @@ def send_chord(chord):
 
 
 def type_text(text):
-    """Type a literal string, independent of keyboard layout."""
-    for char in text:
-        for down in (True, False):
-            event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
-            Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+    """Type a literal string, independent of keyboard layout.
+
+    The length passed here is counted in UTF-16 units, not code points, so an
+    emoji or any other non-BMP character needs two - passing 1 sends half a
+    surrogate pair and types garbage.
+    """
+    if not text:
+        return
+    units = len(text.encode("utf-16-le")) // 2
+    for down in (True, False):
+        event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+        Quartz.CGEventKeyboardSetUnicodeString(event, units, text)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
 def run_shell(command):

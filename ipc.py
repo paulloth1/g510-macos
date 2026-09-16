@@ -85,17 +85,28 @@ class Server:
         """Handle one client. A client hanging up mid-stream is routine."""
         handle = None
         try:
+            # Bound the wait for the request line so a client that connects
+            # and says nothing cannot pin a thread for ever. Cleared before
+            # streaming, where a timeout mid-read would corrupt the file
+            # wrapper's state.
+            conn.settimeout(TIMEOUT)
             handle = conn.makefile("rw")
             line = handle.readline()
+            conn.settimeout(None)
             if not line.strip():
                 return
             payload = json.loads(line)
+            if not isinstance(payload, dict):
+                handle.write(json.dumps(
+                    {"ok": False, "error": "request must be an object"}) + "\n")
+                handle.flush()
+                return
             for reply in self.handler(payload):
                 handle.write(json.dumps(reply) + "\n")
                 handle.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except (OSError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError):
             pass
         finally:
             for closeable in (handle, conn):
