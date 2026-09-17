@@ -4,7 +4,6 @@ A packaged .app has one executable, so the same binary has to be able to run
 the window, the background agent and the command line. Which one is decided by
 the first argument.
 """
-import os
 import sys
 
 

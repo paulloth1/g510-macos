@@ -23,7 +23,6 @@ _batt_cache = {"when": 0.0, "value": None}
 
 CLAUDE_CONFIG = os.path.expanduser("~/.claude.json")
 CLAUDE_STATUSLINE = os.path.expanduser("~/.claude/runcat-usage.json")
-CLAUDE_REFRESH = 45.0
 # Keyed on the source files' mtimes rather than a timer, so the screen follows
 # whichever source last changed instead of lagging behind both.
 _util_cache = {"key": None, "value": None}

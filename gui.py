@@ -7,14 +7,13 @@ anything deeper opens the JSON config.
 import sys
 
 import objc
-from AppKit import (NSAlert, NSApplication, NSApplicationActivationPolicyAccessory,
+from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
                     NSColor,
                     NSColorPanel, NSImage, NSMenu, NSMenuItem, NSStatusBar,
                     NSVariableStatusItemLength)
 from Foundation import NSObject
 
 import actions
-import cli
 import config
 import control
 import device

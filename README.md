@@ -96,6 +96,28 @@ right. They arrive in byte 4 of the macro report (bits 0x01, 0x02, 0x04, 0x08,
 `next` and `prev` walk the cycle, `screen:<name>` jumps to one, `off` blanks
 the display, or give it a binding object to run anything a G-key can.
 
+## Installing
+
+Download `G510.dmg`, drag the app to Applications, open it. It lives in the
+menu bar; there is no Dock icon. Configuration is on its menu.
+
+The bundle is self-contained - the interpreter, the Python modules and the
+compiled extensions are all inside it - so the machine it lands on needs
+neither Homebrew nor a virtualenv. The signature is ad-hoc, which is fine for
+a Mac you control; distributing it more widely would want a Developer ID.
+
+To build the image from a checkout:
+
+    ./make-dmg.sh          -> dist/G510.dmg
+
+To work on the sources instead, `./install.sh` sets up a virtualenv and puts
+the `g510` command on your PATH. Run the UI with `venv/bin/python gui.py`.
+
+Two macOS permissions are needed, and the app asks for both:
+
+    Input Monitoring   to read the G-keys
+    Accessibility      only for bindings that type keystrokes
+
 ## Layout
 
     device.py    vendor HID interface: backlight, M-keys, G-keys, LCD framing
