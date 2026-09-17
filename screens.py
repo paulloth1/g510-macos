@@ -13,6 +13,7 @@ import subprocess
 import time
 
 import config
+import refresh
 from device import LCD_WIDTH
 from lcd import Canvas
 
@@ -179,22 +180,21 @@ def _is_today(stamp):
         return True
 
 
+_media_source = refresh.Background(
+    lambda: (_from_nowplaying() or _from_players() or _from_window_title(), None),
+    MEDIA_REFRESH)
+
+
 def now_playing():
     """What is playing, from whichever source can see it.
 
     macOS's own now-playing information covers every player including browsers,
-    which the per-app AppleScript route cannot. Reading it costs ~100ms, so the
-    result is cached and the elapsed time is advanced locally between polls
-    rather than re-asking every refresh.
+    which the per-app AppleScript route cannot. Asking costs ~100ms, so it is
+    fetched off-thread and the elapsed time advanced locally in between - which
+    also makes the progress bar move smoothly rather than in three-second steps.
     """
-    now = time.time()
-    cached = _media_cache["value"]
-    if now - _media_cache["when"] < MEDIA_REFRESH:
-        return _advance(cached, now - _media_cache["when"])
-
-    reading = _from_nowplaying() or _from_players() or _from_window_title()
-    _media_cache.update(when=now, value=reading)
-    return reading
+    reading = _media_source.get()
+    return _advance(reading, time.time() - _media_source.fetched)
 
 
 def _advance(reading, seconds):

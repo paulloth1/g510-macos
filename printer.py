@@ -7,14 +7,15 @@ just a poll on a cache.
 """
 import json
 import os
-import time
 
 import config
+import refresh
 
 DEFAULT_PORT = 9999
 CONNECT_TIMEOUT = 3.0
 
-_cache = {"when": 0.0, "value": None, "error": None}
+_source = None
+_source_key = None
 
 
 def settings():
@@ -29,20 +30,25 @@ def settings():
 
 
 def status(force=False):
-    """Latest snapshot, or None if the printer is off, unset or unreachable."""
+    """Latest snapshot, or None if the printer is off, unset or unreachable.
+
+    Never blocks: the network round trip happens on a worker, so a printer
+    that has gone away cannot stall the caller for the connect timeout.
+    """
+    global _source, _source_key
     conf = settings()
     if not conf["enabled"] or not conf["host"]:
         return None
-    now = time.time()
-    if not force and now - _cache["when"] < conf["refresh"]:
-        return _cache["value"]
-    reading, error = _fetch(conf["host"], conf["port"])
-    _cache.update(when=now, value=reading, error=error)
-    return reading
+    key = (conf["host"], conf["port"], conf["refresh"])
+    if key != _source_key:
+        _source_key = key
+        _source = refresh.Background(
+            lambda: _fetch(conf["host"], conf["port"]), conf["refresh"])
+    return _source.get_now() if force else _source.get()
 
 
 def last_error():
-    return _cache["error"]
+    return _source.error if _source else None
 
 
 def _fetch(host, port):
