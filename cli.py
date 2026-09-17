@@ -15,6 +15,30 @@ import screens
 LABEL = "com.g510.agent"
 PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def bundled():
+    """Whether this is running from a packaged .app rather than the sources."""
+    return getattr(sys, "frozen", None) == "macosx_app"
+
+
+def agent_command():
+    """What launchd should run. The bundle has one executable for everything."""
+    if bundled():
+        return [os.path.join(bundle_root(), "Contents", "MacOS", "G510"),
+                "--daemon"]
+    return [os.path.join(APP_DIR, "venv", "bin", "python"),
+            os.path.join(APP_DIR, "daemon.py")]
+
+
+def bundle_root():
+    """The .app directory this is running out of."""
+    path = os.path.abspath(sys.executable)
+    while path != "/" and not path.endswith(".app"):
+        path = os.path.dirname(path)
+    return path
+
+
 PYTHON = os.path.join(APP_DIR, "venv", "bin", "python")
 
 USAGE = """g510 - control a Logitech G510 keyboard on macOS
@@ -42,6 +66,7 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
   g510 profile "App" G1 ...     per-app binding overrides
   g510 config                   path to the config file
   g510 permissions              check/request the macOS permissions needed
+  g510 install                  put the g510 command on your PATH
 
   g510 start | stop | status    run the background agent at login
   g510 run                      run the agent in the foreground (ctrl-C stops)
@@ -521,6 +546,31 @@ def cmd_next(_args):
     print(f"LCD -> {choice}")
 
 
+BIN_PATH = os.path.expanduser("~/.local/bin/g510")
+
+
+def install_cli_tool():
+    """Put a `g510` wrapper on PATH, pointing at however this was installed."""
+    os.makedirs(os.path.dirname(BIN_PATH), exist_ok=True)
+    if bundled():
+        target = os.path.join(bundle_root(), "Contents", "MacOS", "G510")
+        body = f'#!/bin/sh\nexec "{target}" --cli "$@"\n'
+    else:
+        body = (f'#!/bin/sh\nexec "{PYTHON}" "{APP_DIR}/cli.py" "$@"\n')
+    with open(BIN_PATH, "w") as handle:
+        handle.write(body)
+    os.chmod(BIN_PATH, 0o755)
+    return BIN_PATH
+
+
+def cmd_install(_args):
+    path = install_cli_tool()
+    print(f"installed {path}")
+    if os.path.dirname(path) not in os.environ.get("PATH", "").split(":"):
+        print(f"  {os.path.dirname(path)} is not on your PATH; add it with:")
+        print(f'  echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc')
+
+
 def cmd_permissions(_args):
     """Report and request the macOS permissions the bindings need."""
     reading = actions.can_read_input()
@@ -557,9 +607,7 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{python}</string>
-    <string>{app_dir}/daemon.py</string>
-  </array>
+{arguments}  </array>
   <key>WorkingDirectory</key><string>{app_dir}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -580,8 +628,10 @@ def agent_loaded():
 
 def cmd_start(_args):
     os.makedirs(os.path.dirname(PLIST_PATH), exist_ok=True)
+    arguments = "".join(f"    <string>{part}</string>\n"
+                        for part in agent_command())
     with open(PLIST_PATH, "w") as handle:
-        handle.write(PLIST.format(label=LABEL, python=PYTHON,
+        handle.write(PLIST.format(label=LABEL, arguments=arguments,
                                   app_dir=APP_DIR, log=LOG_PATH))
     subprocess.run(["launchctl", "unload", PLIST_PATH],
                    capture_output=True)
@@ -629,7 +679,7 @@ COMMANDS = {
     "brightness": cmd_brightness, "record": cmd_record, "macros": cmd_macros,
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
     "bank": cmd_bank, "switch": cmd_switch,
-    "printer": cmd_printer, "claude": cmd_claude, "start": cmd_start, "stop": cmd_stop,
+    "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 

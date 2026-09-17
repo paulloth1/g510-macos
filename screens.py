@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 import config
@@ -38,13 +39,19 @@ NOWPLAYING_CANDIDATES = (
 
 
 def _find_nowplaying():
-    found = shutil.which("nowplaying-cli")
-    if found:
-        return found
+    """Look inside the app bundle first, then the usual install locations.
+
+    A packaged app cannot rely on PATH at all - launchd gives an agent a
+    minimal one, and a Mac that installed the .app may have no Homebrew.
+    """
+    bundled = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                           "nowplaying-cli")
+    if os.path.exists(bundled):
+        return bundled
     for path in NOWPLAYING_CANDIDATES:
         if os.path.exists(path):
             return path
-    return None
+    return shutil.which("nowplaying-cli")
 
 
 NOWPLAYING_CLI = _find_nowplaying()

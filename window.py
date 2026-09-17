@@ -4,6 +4,7 @@ Four panes behind a segmented control, each a column of grouped cards. Panes
 size themselves from the cards they hold, so adding a control cannot silently
 push another one off the bottom.
 """
+import os
 import subprocess
 import time
 
@@ -541,6 +542,14 @@ class G510Window(NSObject):
         open_button.setTarget_(self)
         open_button.setAction_(b"editConfig:")
         content.addSubview_(open_button)
+        self.cli_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(356, 14, 130, 26))
+        self.cli_button.setTitle_("Install g510")
+        self.cli_button.setBezelStyle_(NSBezelStyleRounded)
+        self.cli_button.setToolTip_("Put the g510 command on your PATH")
+        self.cli_button.setTarget_(self)
+        self.cli_button.setAction_(b"installCli:")
+        content.addSubview_(self.cli_button)
         self.log_button = NSButton.alloc().initWithFrame_(
             NSMakeRect(186, 14, 160, 26))
         self.log_button.setTitle_("Open agent log")
@@ -1106,6 +1115,24 @@ class G510Window(NSObject):
     def editConfig_(self, _sender):
         config.ensure_exists()
         NSWorkspace.sharedWorkspace().openFile_(config.CONFIG_PATH)
+
+    @objc.IBAction
+    def installCli_(self, _sender):
+        try:
+            path = cli.install_cli_tool()
+        except OSError as exc:
+            self.complain(str(exc))
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Command line tool installed")
+        on_path = os.path.dirname(path) in os.environ.get("PATH", "").split(":")
+        alert.setInformativeText_(
+            f"{path}\n\n" + ("Try: g510 --help" if on_path else
+                              "That folder is not on your PATH yet. Add it to "
+                              "~/.zshrc:\n\n"
+                              'export PATH="$HOME/.local/bin:$PATH"'))
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
 
     @objc.IBAction
     def openLog_(self, _sender):
