@@ -1,3 +1,4 @@
 hidapi
 pyobjc-framework-Cocoa
 pyobjc-framework-Quartz
+websocket-client

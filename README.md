@@ -22,6 +22,24 @@ follow the Linux `hid-lg-g15` driver and `libg15`.
 - The 160x43 LCD, drawn with CoreText: status, clock, Claude usage, now
   playing, G-key echo, frontmost app
 
+## 3D printer progress
+
+The `printer` screen reads a Creality printer on the LAN. Creality's firmware
+serves a WebSocket on port 9999 whose **first frame is a complete status
+snapshot** - 77 fields including progress, time remaining, layer, temperatures
+and the job name - and everything after that is deltas. Reading one snapshot
+and closing costs about 30ms, so `printer.py` polls on a cache rather than
+holding a connection open.
+
+    g510 printer 192.168.1.50     point it at a printer and enable the screen
+    g510 printer                  current setting and live status
+    g510 printer off              disable it
+
+Moonraker (port 7125) is not exposed on this firmware, which is why it uses
+the vendor WebSocket. The `state` codes are observed on a K1C rather than
+documented - 0 idle, 1 printing, 2 paused, 3 stopped - so anything else is
+shown as its raw number instead of being guessed at.
+
 ## Where the Claude usage numbers come from
 
 The `claude` screen shows how much of the usage limits is consumed. Two files
@@ -38,6 +56,13 @@ made the screen show 53% while the real figure was 96%. The result is cached
 against both files' mtimes rather than a timer, so the screen follows whichever
 source last changed instead of lagging behind both. A `~` in the header means
 the freshest reading is still over ten minutes old.
+
+Which windows it shows is configurable - any two of `five_hour`, `seven_day`
+and `context`:
+
+    g510 claude five_hour context
+
+`claude.stale_after_seconds` controls when the `~` marker appears.
 
 `claude_usage()` still reads raw token totals out of today's JSONL transcripts,
 if a token-count screen is ever wanted again.

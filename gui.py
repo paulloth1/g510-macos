@@ -30,6 +30,7 @@ SCREEN_NAMES = {
     "clock": "Clock",
     "claude": "Claude Usage",
     "media": "Now Playing",
+    "printer": "3D Printer",
     "gkeys": "G-key Echo",
     "app": "Active App",
 }

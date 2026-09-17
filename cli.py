@@ -34,6 +34,8 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
 
   g510 bank [1|2|3]             show or switch the binding bank (M1/M2/M3)
   g510 switch [on|off <action>] what the joystick switch does
+  g510 printer [host|off]       3D printer the display reads from
+  g510 claude [rows...]         which usage windows the Claude screen shows
   g510 bindings                 list G-key bindings for the active bank
   g510 bind G1 app Safari       bind a key: app | keys | shell | text | none
   g510 record G5 [name]         record a keystroke macro onto a G-key
@@ -427,6 +429,71 @@ def cmd_switch(args):
     print(f"switch {position} -> {current.get(position) or 'nothing'}")
 
 
+def cmd_printer(args):
+    """Show or set the 3D printer the display reads from."""
+    import printer
+
+    settings = config.load()
+    block = settings.setdefault("printer", {})
+    if not args:
+        host = block.get("host") or "not set"
+        print(f"  host     {host}:{block.get('port', 9999)}")
+        print(f"  enabled  {'yes' if block.get('enabled') else 'no'}")
+        reading = printer.status(force=True)
+        if reading:
+            print(f"  state    {printer.describe_state(reading)}"
+                  f"  {reading['progress']}%")
+            if reading["file"]:
+                print(f"  file     {reading['file']}")
+            print(f"  temps    nozzle {reading['nozzle']:.0f}"
+                  f"  bed {reading['bed']:.0f}")
+        elif printer.last_error():
+            print(f"  error    {printer.last_error()}")
+        print("\n  set with: g510 printer 192.168.1.50   |   g510 printer off")
+        return
+    if args[0].lower() in ("off", "none", "disable"):
+        block["enabled"] = False
+        save_config(settings)
+        reload_agent()
+        print("printer screen disabled")
+        return
+    host, _, port = args[0].partition(":")
+    block["host"] = host
+    block["enabled"] = True
+    if port.isdigit():
+        block["port"] = int(port)
+    save_config(settings)
+    reload_agent()
+    reading = printer.status(force=True)
+    if reading:
+        print(f"printer -> {host}  ({reading['model']}, "
+              f"{printer.describe_state(reading)})")
+    else:
+        print(f"printer -> {host}, but it did not answer: "
+              f"{printer.last_error()}")
+
+
+def cmd_claude(args):
+    """Choose which usage windows the Claude screen shows."""
+    settings = config.load()
+    block = settings.setdefault("claude", {})
+    if not args:
+        print(f"  rows   {', '.join(block.get('rows') or [])}")
+        print(f"  stale  after {block.get('stale_after_seconds', 600)}s")
+        print("\n  choose any two: " + ", ".join(screens.CLAUDE_ROWS))
+        print("  e.g. g510 claude five_hour context")
+        return
+    wanted = [a for a in args if a in screens.CLAUDE_ROWS]
+    unknown = [a for a in args if a not in screens.CLAUDE_ROWS]
+    if unknown:
+        sys.exit(f"Unknown row(s) {', '.join(unknown)}. "
+                 f"Choose from: {', '.join(screens.CLAUDE_ROWS)}")
+    block["rows"] = wanted[:2]
+    save_config(settings)
+    reload_agent()
+    print(f"claude screen -> {', '.join(block['rows'])}")
+
+
 def cmd_next(_args):
     """Advance the LCD to the next screen in the cycle."""
     if control.daemon_running():
@@ -559,7 +626,8 @@ COMMANDS = {
     "config": cmd_config, "permissions": cmd_permissions,
     "brightness": cmd_brightness, "record": cmd_record, "macros": cmd_macros,
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
-    "bank": cmd_bank, "switch": cmd_switch, "start": cmd_start, "stop": cmd_stop,
+    "bank": cmd_bank, "switch": cmd_switch,
+    "printer": cmd_printer, "claude": cmd_claude, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 

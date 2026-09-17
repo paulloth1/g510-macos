@@ -30,6 +30,20 @@ DEFAULTS = {
         "L4": "screen:claude",
         "L5": "screen:media",
     },
+    # A Creality printer on the LAN. Its WebSocket's first frame is a full
+    # status snapshot, so nothing is held open.
+    "printer": {
+        "enabled": False,
+        "host": "",
+        "port": 9999,
+        "refresh_seconds": 5.0,
+    },
+    # Which usage windows the Claude screen shows, top to bottom. Any two of
+    # five_hour, seven_day, context.
+    "claude": {
+        "rows": ["five_hour", "seven_day"],
+        "stale_after_seconds": 600,
+    },
     "app_colors": {},
     "app_profiles": {},
     "macros": {},

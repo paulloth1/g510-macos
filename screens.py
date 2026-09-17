@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 
+import config
 from device import LCD_WIDTH
 from lcd import Canvas
 
@@ -304,6 +305,13 @@ def claude_utilization():
     return _mark_stale(best)
 
 
+CLAUDE_ROWS = {
+    "five_hour": "5h",
+    "seven_day": "7d",
+    "context": "ctx",
+}
+
+
 def _mark_stale(reading):
     """Age the reading now, not when it was cached.
 
@@ -311,7 +319,9 @@ def _mark_stale(reading):
     ever, so staleness has to be judged on the way out or it can never become
     true.
     """
-    reading["stale"] = (time.time() - (reading.get("fetched") or 0)) > 600
+    block = config.load().get("claude") or {}
+    limit = float(block.get("stale_after_seconds") or 600)
+    reading["stale"] = (time.time() - (reading.get("fetched") or 0)) > limit
     return reading
 
 
@@ -454,8 +464,11 @@ def screen_claude(canvas, _state):
         header = "~ " + header
     canvas.text(header, LCD_WIDTH - canvas.measure(header, 10) - 2, 1, 10)
 
-    for index, (label, key) in enumerate((("5h", "five_hour"),
-                                          ("7d", "seven_day"))):
+    block = config.load().get("claude") or {}
+    wanted = [row for row in (block.get("rows") or ["five_hour", "seven_day"])
+              if row in CLAUDE_ROWS][:2]
+    for index, key in enumerate(wanted or ["five_hour", "seven_day"]):
+        label = CLAUDE_ROWS[key]
         y = 15 + index * 15
         value = util.get(key)
         canvas.text(label, 2, y + 1, 10)
@@ -465,6 +478,44 @@ def screen_claude(canvas, _state):
         canvas.bar(22, y, 104, 11, value / 100.0)
         percent = f"{value}%"
         canvas.text(percent, LCD_WIDTH - canvas.measure(percent, 11) - 2, y, 11)
+
+
+def screen_printer(canvas, _state):
+    """3D printer progress: what it is doing, how far in, and how hot."""
+    import printer
+
+    reading = printer.status()
+    if not reading:
+        canvas.text("PRINTER", 2, 0, 11)
+        canvas.text(printer.describe_state(None), 2, 16, 12)
+        note = printer.last_error()
+        if note:
+            canvas.text(_fit(canvas, note, 9), 2, 31, 9)
+        return
+
+    state = printer.describe_state(reading).upper()
+    canvas.text(f"{reading['model']}  {state}", 2, 0, 10)
+    if printer.is_printing(reading) and reading["left"]:
+        left = _duration(reading["left"])
+        canvas.text(left, LCD_WIDTH - canvas.measure(left, 10) - 2, 1, 10)
+
+    canvas.text(_fit(canvas, reading["file"] or "no file", 11), 2, 11, 11)
+
+    detail = f"N{reading['nozzle']:.0f}  B{reading['bed']:.0f}"
+    if reading["layers"]:
+        detail += f"  L{reading['layer']}/{reading['layers']}"
+    canvas.text(detail, 2, 24, 9)
+    percent = f"{reading['progress']}%"
+    canvas.text(percent, LCD_WIDTH - canvas.measure(percent, 9) - 2, 24, 9)
+
+    canvas.bar(2, 36, LCD_WIDTH - 4, 6, reading["progress"] / 100.0)
+
+
+def _duration(seconds):
+    """1720 -> '28m', 7200 -> '2h00'."""
+    seconds = max(0, int(seconds))
+    hours, minutes = seconds // 3600, (seconds % 3600) // 60
+    return f"{hours}h{minutes:02d}" if hours else f"{minutes}m"
 
 
 def screen_media(canvas, _state):
@@ -523,6 +574,7 @@ SCREENS = {
     "clock": screen_clock,
     "claude": screen_claude,
     "media": screen_media,
+    "printer": screen_printer,
     "gkeys": screen_gkeys,
     "app": screen_app,
 }
