@@ -8,7 +8,7 @@ import sys
 
 import objc
 from AppKit import (NSAlert, NSApplication, NSApplicationActivationPolicyAccessory,
-                    NSApplicationActivationPolicyRegular, NSColor,
+                    NSColor,
                     NSColorPanel, NSImage, NSMenu, NSMenuItem, NSStatusBar,
                     NSVariableStatusItemLength)
 from Foundation import NSObject

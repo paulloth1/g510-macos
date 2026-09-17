@@ -3,7 +3,6 @@ import collections
 import os
 import subprocess
 import sys
-import time
 
 import actions
 import config
@@ -83,6 +82,9 @@ def cmd_info(_args):
             mark = " <- control" if found["usage_page"] == 0xFF00 else ""
             print(f"  interface {found['interface_number']}  "
                   f"usage_page=0x{found['usage_page']:04x}{mark}")
+    if not device.NON_EXCLUSIVE:
+        print("  warning:    could not open non-exclusively; the media and "
+              "volume keys may not work while the agent runs")
     print(f"  config:     {config.CONFIG_PATH}")
     print(f"  agent:      {'running' if control.daemon_running() else 'not running'}")
 

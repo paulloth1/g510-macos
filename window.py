@@ -305,7 +305,6 @@ class G510Window(NSObject):
         self.switch_popups = {}
         for index, (key, label) in enumerate((("on", "Engaged"),
                                               ("off", "Released"))):
-            y = height - 56 - index * 0
             x = 16 + index * 236
             content.addSubview_(place(text(label, 11, secondary=True),
                                       x, height - 44, 100, 15))

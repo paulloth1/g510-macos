@@ -4,7 +4,6 @@ Each screen is a function taking (canvas, state) and drawing one frame.
 State is a small dict the daemon keeps between refreshes.
 """
 import datetime
-import glob
 import json
 import os
 import re
@@ -20,10 +19,7 @@ from lcd import Canvas
 _CPU_COUNT = os.cpu_count() or 1
 _mem_cache = {"when": 0.0, "value": 0.0}
 _batt_cache = {"when": 0.0, "value": None}
-_claude_cache = {"when": 0.0, "value": None}
-_media_cache = {"when": 0.0, "value": None}
 
-CLAUDE_TRANSCRIPTS = os.path.expanduser("~/.claude/projects/*/*.jsonl")
 CLAUDE_CONFIG = os.path.expanduser("~/.claude.json")
 CLAUDE_STATUSLINE = os.path.expanduser("~/.claude/runcat-usage.json")
 CLAUDE_REFRESH = 45.0
@@ -113,71 +109,6 @@ def battery():
         value = None
     _batt_cache.update(when=now, value=value)
     return value
-
-
-def claude_usage():
-    """Token usage from today's Claude Code transcripts.
-
-    Reads the local JSONL transcripts, counting only files touched today so
-    the scan stays cheap, and caches the result.
-    """
-    now = time.time()
-    if now - _claude_cache["when"] < CLAUDE_REFRESH and _claude_cache["value"]:
-        return _claude_cache["value"]
-
-    midnight = datetime.datetime.now().replace(
-        hour=0, minute=0, second=0, microsecond=0).timestamp()
-    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-              "messages": 0, "sessions": 0, "model": None}
-    for path in glob.glob(CLAUDE_TRANSCRIPTS):
-        try:
-            if os.path.getmtime(path) < midnight:
-                continue
-        except OSError:
-            continue
-        counted = False
-        try:
-            with open(path, errors="ignore") as handle:
-                for line in handle:
-                    try:
-                        entry = json.loads(line)
-                    except ValueError:
-                        continue
-                    stamp = entry.get("timestamp", "")
-                    if stamp and not _is_today(stamp):
-                        continue
-                    message = entry.get("message")
-                    if not isinstance(message, dict):
-                        continue
-                    usage = message.get("usage")
-                    if not isinstance(usage, dict):
-                        continue
-                    totals["messages"] += 1
-                    totals["input"] += usage.get("input_tokens") or 0
-                    totals["output"] += usage.get("output_tokens") or 0
-                    totals["cache_read"] += usage.get("cache_read_input_tokens") or 0
-                    totals["cache_write"] += usage.get("cache_creation_input_tokens") or 0
-                    model = message.get("model")
-                    if model and model != "<synthetic>":
-                        totals["model"] = model
-                    counted = True
-        except OSError:
-            continue
-        if counted:
-            totals["sessions"] += 1
-    _claude_cache.update(when=now, value=totals)
-    return totals
-
-
-def _is_today(stamp):
-    """Whether an ISO timestamp falls on today's date, local time."""
-    try:
-        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-        if when.tzinfo is not None:
-            when = when.astimezone()
-        return when.date() == datetime.date.today()
-    except ValueError:
-        return True
 
 
 _media_source = refresh.Background(
@@ -271,15 +202,6 @@ def clock(seconds):
     """612 -> '10:12'."""
     seconds = max(0, int(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def compact(number):
-    """12345 -> '12.3k', for a display 160 pixels wide."""
-    if number >= 1_000_000:
-        return f"{number / 1_000_000:.1f}M"
-    if number >= 1_000:
-        return f"{number / 1_000:.1f}k"
-    return str(number)
 
 
 def claude_utilization():
