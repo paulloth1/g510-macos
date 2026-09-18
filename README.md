@@ -227,7 +227,28 @@ info dictionary before NSApplication starts.
     ~/.local/bin/g510                          command line entry point
     ~/.local/share/g510/                       modules and virtualenv
     ~/Applications/G510.app                    menu bar app
-    ~/Library/LaunchAgents/com.g510.agent.plist   agent, starts at login
+    ~/Library/LaunchAgents/com.g510.agent.plist      agent, starts at login
     ~/Library/Logs/g510.log                    agent log
 
 Remove with `g510 stop`, then delete those paths.
+
+## Licence
+
+GNU General Public License v3.0 — see `LICENSE`.
+
+    Copyright (C) 2026 Paul Loth
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    This program is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+    Public License for more details.
+
+The HID report layouts here were worked out from the Linux `hid-lg-g15`
+driver's documented behaviour and from libg15, and the rest was mapped off the
+hardware directly by pressing keys and watching what arrived. No code was
+copied from either.

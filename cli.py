@@ -14,9 +14,6 @@ import recorder
 import screens
 
 LABEL = "com.g510.agent"
-# The label used to carry a personal name. Anything still registered under it
-# is unloaded on the next start so two agents cannot both hold the keyboard.
-LEGACY_LABELS = ("com.g510.agent",)
 PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -855,19 +852,7 @@ def agent_loaded():
     return result.returncode == 0
 
 
-def _retire_legacy_agents():
-    """Unload and remove agents registered under an older label."""
-    for label in LEGACY_LABELS:
-        path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
-        if os.path.exists(path):
-            subprocess.run(["launchctl", "unload", "-w", path],
-                           capture_output=True)
-            os.unlink(path)
-            print(f"  retired the old agent {label}")
-
-
 def cmd_start(_args):
-    _retire_legacy_agents()
     os.makedirs(os.path.dirname(PLIST_PATH), exist_ok=True)
     arguments = "".join(f"    <string>{part}</string>\n"
                         for part in agent_command())
