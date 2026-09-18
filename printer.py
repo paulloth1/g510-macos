@@ -18,7 +18,7 @@ _source = None
 _source_key = None
 
 
-BACKENDS = ("auto", "creality", "moonraker", "octoprint")
+BACKENDS = ("auto", "creality", "moonraker", "octoprint", "prusalink")
 
 
 def settings():
@@ -61,7 +61,7 @@ def last_error():
 def _fetch(conf):
     """Try whichever backend is configured, or each in turn."""
     order = ([conf["kind"]] if conf["kind"] != "auto"
-             else ["creality", "moonraker", "octoprint"])
+             else ["creality", "moonraker", "prusalink", "octoprint"])
     errors = []
     for kind in order:
         reading, error = _BACKENDS[kind](conf)
@@ -175,10 +175,43 @@ def _fetch_octoprint(conf):
     }, None
 
 
+def _fetch_prusalink(conf):
+    """PrusaLink, on MK4/XL/Mini. Its API key is on the printer's screen."""
+    host = conf["host"]
+    port = conf["port"] if conf["kind"] == "prusalink" else 80
+    if not conf["api_key"]:
+        return None, "needs an API key (g510 printer key <key>)"
+    headers = {"X-Api-Key": conf["api_key"]}
+    body, error = _get_json(f"http://{host}:{port}/api/v1/status",
+                            headers=headers)
+    if not body:
+        return None, error
+    job = body.get("job") or {}
+    printer_state = body.get("printer") or {}
+    state = {"PRINTING": 1, "PAUSED": 2, "FINISHED": 3, "STOPPED": 3,
+             "IDLE": 0, "READY": 0}.get(
+                 str(printer_state.get("state", "")).upper(), 0)
+    return {
+        "model": conf["host"],
+        "file": str((job.get("file") or {}).get("display_name")
+                    or (job.get("file") or {}).get("name") or ""),
+        "progress": int(job.get("progress") or 0),
+        "left": int(job.get("time_remaining") or 0),
+        "elapsed": int(job.get("time_printing") or 0),
+        "layer": 0, "layers": 0,
+        "nozzle": float(printer_state.get("temp_nozzle") or 0),
+        "nozzle_target": float(printer_state.get("target_nozzle") or 0),
+        "bed": float(printer_state.get("temp_bed") or 0),
+        "bed_target": float(printer_state.get("target_bed") or 0),
+        "state": state,
+    }, None
+
+
 _BACKENDS = {
     "creality": _fetch_creality,
     "moonraker": _fetch_moonraker,
     "octoprint": _fetch_octoprint,
+    "prusalink": _fetch_prusalink,
 }
 
 

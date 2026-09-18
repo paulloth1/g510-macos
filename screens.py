@@ -448,6 +448,68 @@ def screen_claude(canvas, _state):
         canvas.text(percent, LCD_WIDTH - canvas.measure(percent, 11) - 2, y, 11)
 
 
+_gauge_sources = {}
+
+
+def gauge_values():
+    """Run each configured gauge command, off-thread, and cache the numbers.
+
+    Claude Code happens to cache its usage locally; most tools do not, and
+    inventing a reader per tool would be guesswork. A command that prints a
+    number is something anyone can point at whatever they actually use.
+    """
+    readings = []
+    for entry in (config.load().get("gauges") or [])[:3]:
+        label = str(entry.get("label") or "?")[:8]
+        command = entry.get("command")
+        if not command:
+            continue
+        source = _gauge_sources.get(command)
+        if source is None:
+            source = refresh.Background(
+                lambda c=command: (_run_gauge(c), None),
+                float(entry.get("refresh_seconds") or 15))
+            _gauge_sources[command] = source
+        readings.append((label, source.get(), entry.get("unit", "%")))
+    return readings
+
+
+def _run_gauge(command):
+    """A gauge command prints one number. Anything else reads as no value."""
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True,
+                                text=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    line = (result.stdout or "").strip().split("\n")[0].strip().rstrip("%")
+    try:
+        return float(line)
+    except ValueError:
+        return None
+
+
+def screen_gauge(canvas, _state):
+    """Whatever the user pointed it at - a quota, a temperature, a queue."""
+    readings = gauge_values()
+    canvas.text("GAUGES", 2, 0, 10)
+    canvas.text(time.strftime("%H:%M"), LCD_WIDTH - canvas.measure("00:00", 10) - 2,
+                1, 10)
+    if not readings:
+        canvas.text("none configured", 2, 16, 12)
+        canvas.text("g510 gauge add ...", 2, 31, 9)
+        return
+    for index, (label, value, unit) in enumerate(readings):
+        y = 14 + index * 15
+        canvas.text(label, 2, y + 1, 9)
+        if value is None:
+            canvas.text("--", 46, y + 1, 9)
+            continue
+        shown = f"{value:.0f}{unit}"
+        canvas.bar(46, y, LCD_WIDTH - 52 - canvas.measure(shown, 10), 11,
+                   value / 100.0)
+        canvas.text(shown, LCD_WIDTH - canvas.measure(shown, 10) - 2, y, 10)
+
+
 def screen_printer(canvas, _state):
     """3D printer progress: what it is doing, how far in, and how hot."""
     import printer
@@ -543,6 +605,7 @@ SCREENS = {
     "claude": screen_claude,
     "media": screen_media,
     "printer": screen_printer,
+    "gauge": screen_gauge,
     "gkeys": screen_gkeys,
     "app": screen_app,
 }

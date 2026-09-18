@@ -47,6 +47,10 @@ DEFAULTS = {
         "rows": ["five_hour", "seven_day"],
         "stale_after_seconds": 600,
     },
+    # Each runs a command that prints one number, shown as a labelled bar.
+    # For anything this tool does not know how to read: another assistant's
+    # quota, a GPU temperature, a build queue.
+    "gauges": [],
     "app_colors": {},
     "app_profiles": {},
     "macros": {},

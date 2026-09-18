@@ -40,6 +40,36 @@ the vendor WebSocket. The `state` codes are observed on a K1C rather than
 documented - 0 idle, 1 printing, 2 paused, 3 stopped - so anything else is
 shown as its raw number instead of being guessed at.
 
+## Gauges
+
+Anything that prints a number can be a bar on the display:
+
+    g510 gauge add Disk "df -h / | awk 'NR==2{print \$5}'"
+    g510 gauge add GPU  "..."
+
+Up to three, refreshed off-thread. This exists because most tools keep their
+quota server-side with nothing local to read - Claude Code caching its
+utilization on disk is the exception, not the rule - so a command someone
+writes against what they actually use beats a reader guessed at on their
+behalf.
+
+## Printers
+
+`auto` tries each backend in turn; `g510 printer kind <name>` pins one.
+
+    creality    K1/K1C/K2 stock firmware, over its WebSocket
+    moonraker   Klipper - Voron, RatRig, most custom builds, rooted Creality
+    prusalink   MK4, XL, Mini; API key from the printer's own screen
+    octoprint   most Marlin printers behind a Pi; API key from its settings
+
+Only the Creality backend has been tested against real hardware. The other
+three are written from their documented APIs.
+
+Bambu Lab is deliberately absent: it speaks MQTT over TLS and needs the
+printer's serial and access code, which is a dependency and a credential
+handling problem rather than another HTTP call, and not something to ship
+untested.
+
 ## Where the Claude usage numbers come from
 
 The `claude` screen shows how much of the usage limits is consumed. Two files

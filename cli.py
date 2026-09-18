@@ -73,6 +73,7 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
   g510 verify                   check the key mapping against the markings
   g510 iso [on|off]             fix ^/° and <>| being swapped
   g510 leds [which] [what]      use the Num/Scroll Lock LEDs macOS ignores
+  g510 gauge add <label> <cmd>  a bar fed by any command printing a number
   g510 install                  put the g510 command on your PATH
 
   g510 start | stop | status    run the background agent at login
@@ -623,6 +624,42 @@ def _await_press(stream, expected, timeout=15.0):
 INDICATORS = ("off", "printing", "claude", "recording")
 
 
+def cmd_gauge(args):
+    """Bars on the display fed by a command that prints one number.
+
+    For anything this tool has no reader for - another assistant's quota, a
+    GPU temperature, a build queue. Most tools keep their quota server-side,
+    so a command you write beats a reader I guessed at.
+    """
+    settings = config.load()
+    gauges = settings.setdefault("gauges", [])
+    if not args or args[0] == "list":
+        if not gauges:
+            print("  none configured")
+            print("\n  e.g. g510 gauge add Disk \"df -h / | awk 'NR==2{print $5}'\"")
+        for entry in gauges:
+            print(f"  {entry.get('label', '?'):10} {entry.get('command', '')}")
+        return
+    if args[0] == "clear":
+        settings["gauges"] = []
+        save_config(settings)
+        reload_agent()
+        print("gauges cleared")
+        return
+    if args[0] == "add":
+        if len(args) < 3:
+            sys.exit('Usage: g510 gauge add <label> "<command printing a number>"')
+        if len(gauges) >= 3:
+            sys.exit("Three gauges is all the display has room for; "
+                     "clear them first")
+        gauges.append({"label": args[1], "command": " ".join(args[2:])})
+        save_config(settings)
+        reload_agent()
+        print(f"gauge {args[1]!r} added")
+        return
+    sys.exit("Usage: g510 gauge [list|add <label> <command>|clear]")
+
+
 def cmd_leds(args):
     """Use the Num Lock and Scroll Lock LEDs, which macOS leaves dark."""
     settings = config.load()
@@ -884,7 +921,8 @@ COMMANDS = {
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
     "bank": cmd_bank, "switch": cmd_switch,
     "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install,
-    "verify": cmd_verify, "iso": cmd_iso, "leds": cmd_leds, "start": cmd_start, "stop": cmd_stop,
+    "verify": cmd_verify, "iso": cmd_iso, "leds": cmd_leds,
+    "gauge": cmd_gauge, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 
