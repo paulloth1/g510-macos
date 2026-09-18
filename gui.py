@@ -324,23 +324,23 @@ class AppDelegate(NSObject):
         return self
 
     def applicationDidFinishLaunching_(self, _notification):
-        print(f"launched; wants_window={self.wants_window!r} argv={sys.argv}", flush=True)
         self.menu = G510Menu.alloc().init()
-        print("status item:", self.menu.status_item.isVisible(), flush=True)
-        if self.wants_window:
-            try:
-                import window
-                self.controller = window.G510Window.alloc().initWithMenu_(self.menu)
-                self.menu.window_controller = self.controller
-                self.controller.show()
-                print("window shown:", self.controller.window.isVisible(), flush=True)
-            except Exception:
-                import traceback; traceback.print_exc()
+        if not self.wants_window:
+            return
+        try:
+            import window
+            self.controller = window.G510Window.alloc().initWithMenu_(self.menu)
+            self.menu.window_controller = self.controller
+            self.controller.show()
+        except Exception:
+            # An exception here is swallowed by AppKit, which would leave the
+            # menu bar item up and the window silently absent.
+            import traceback
+            traceback.print_exc()
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, visible):
         if not visible and self.controller is not None:
             self.controller.show()
-            print("window shown:", self.controller.window.isVisible(), flush=True)
         return True
 
 
