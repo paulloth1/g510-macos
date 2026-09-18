@@ -22,7 +22,27 @@ _mem_cache = {"when": 0.0, "value": 0.0}
 _batt_cache = {"when": 0.0, "value": None}
 
 CLAUDE_CONFIG = os.path.expanduser("~/.claude.json")
-CLAUDE_STATUSLINE = os.path.expanduser("~/.claude/runcat-usage.json")
+
+# Claude Code's own cache goes stale, so a statusline script's dump is often
+# fresher. Which script a person runs varies, so look for any of the known
+# shapes rather than hard-coding one, and let the config name another.
+CLAUDE_STATUSLINE_CANDIDATES = (
+    "~/.claude/runcat-usage.json",
+    "~/.claude/usage.json",
+    "~/.claude/statusline.json",
+)
+
+
+def claude_statusline_path():
+    """The statusline dump to read, if the user has one at all."""
+    configured = (config.load().get("claude") or {}).get("statusline")
+    candidates = ([configured] if configured else []) + \
+        list(CLAUDE_STATUSLINE_CANDIDATES)
+    for path in candidates:
+        expanded = os.path.expanduser(path)
+        if os.path.exists(expanded):
+            return expanded
+    return None
 # Keyed on the source files' mtimes rather than a timer, so the screen follows
 # whichever source last changed instead of lagging behind both.
 _util_cache = {"key": None, "value": None}
@@ -188,20 +208,33 @@ def _from_players():
             "duration": 0, "playing": True, "app": ""}
 
 
+BROWSERS = ("firefox", "Google Chrome", "Safari", "Brave Browser",
+            "Microsoft Edge", "Arc", "Vivaldi", "Opera")
+
+# Sites whose window title names what is playing, and the suffix to trim.
+TITLE_SITES = (" - YouTube", " | Twitch", " - Twitch", " - SoundCloud",
+               " | Spotify", " - Vimeo")
+
+
 def _from_window_title():
     """Last resort: a browser's window title names the page that is playing."""
-    script = ('tell application "System Events" to tell process "firefox" '
-              'to return name of front window')
-    try:
-        result = subprocess.run(["osascript", "-e", script],
-                                capture_output=True, text=True, timeout=3)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    title = result.stdout.strip()
-    if not title or "YouTube" not in title:
-        return None
-    return {"title": title.rsplit(" - YouTube", 1)[0], "artist": "YouTube",
-            "elapsed": 0, "duration": 0, "playing": True, "app": "firefox"}
+    for browser in BROWSERS:
+        script = (f'tell application "System Events" to tell process '
+                  f'"{browser}" to return name of front window')
+        try:
+            result = subprocess.run(["osascript", "-e", script],
+                                    capture_output=True, text=True, timeout=2)
+        except (subprocess.SubprocessError, OSError):
+            continue
+        title = result.stdout.strip()
+        if not title:
+            continue
+        for suffix in TITLE_SITES:
+            if suffix in title:
+                return {"title": title.rsplit(suffix, 1)[0],
+                        "artist": suffix.lstrip(" -|"), "elapsed": 0,
+                        "duration": 0, "playing": True, "app": browser}
+    return None
 
 
 def clock(seconds):
@@ -218,7 +251,7 @@ def claude_utilization():
     while the statusline dump is rewritten on every render. Neither is
     authoritative, so take whichever was written most recently.
     """
-    key = tuple(_mtime(path) for path in (CLAUDE_CONFIG, CLAUDE_STATUSLINE))
+    key = (_mtime(CLAUDE_CONFIG), _mtime(claude_statusline_path() or ""))
     if key == _util_cache["key"] and _util_cache["value"]:
         return _mark_stale(_util_cache["value"])
 
@@ -286,14 +319,17 @@ def _from_claude_config():
 
 def _from_statusline():
     """The statusline dump, which is rewritten on every render."""
+    path = claude_statusline_path()
+    if not path:
+        return None
     try:
-        with open(CLAUDE_STATUSLINE) as handle:
+        with open(path) as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return None
     reading = {"five_hour": None, "seven_day": None, "resets_at": None,
                "context": None, "source": "statusline", "stale": False,
-               "fetched": _mtime(CLAUDE_STATUSLINE)}
+               "fetched": _mtime(path)}
     for metric in data.get("metrics") or []:
         value = metric.get("normalizedValue")
         if value is None:

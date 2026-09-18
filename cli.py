@@ -14,6 +14,9 @@ import recorder
 import screens
 
 LABEL = "com.g510.agent"
+# The label used to carry a personal name. Anything still registered under it
+# is unloaded on the next start so two agents cannot both hold the keyboard.
+LEGACY_LABELS = ("com.g510.agent",)
 PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -480,7 +483,27 @@ def cmd_printer(args):
                   f"  bed {reading['bed']:.0f}")
         elif printer.last_error():
             print(f"  error    {printer.last_error()}")
+        print(f"  kind     {block.get('kind', 'auto')}"
+              " (auto tries Creality, then Moonraker, then OctoPrint)")
         print("\n  set with: g510 printer 192.168.1.50   |   g510 printer off")
+        print("            g510 printer kind moonraker")
+        print("            g510 printer key <octoprint api key>")
+        return
+    if args[0].lower() == "kind":
+        if len(args) < 2 or args[1].lower() not in printer.BACKENDS:
+            sys.exit("Usage: g510 printer kind " + "|".join(printer.BACKENDS))
+        block["kind"] = args[1].lower()
+        save_config(settings)
+        reload_agent()
+        print(f"printer kind -> {block['kind']}")
+        return
+    if args[0].lower() == "key":
+        if len(args) < 2:
+            sys.exit("Usage: g510 printer key <octoprint api key>")
+        block["api_key"] = args[1]
+        save_config(settings)
+        reload_agent()
+        print("OctoPrint API key saved")
         return
     if args[0].lower() in ("off", "none", "disable"):
         block["enabled"] = False
@@ -795,7 +818,19 @@ def agent_loaded():
     return result.returncode == 0
 
 
+def _retire_legacy_agents():
+    """Unload and remove agents registered under an older label."""
+    for label in LEGACY_LABELS:
+        path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        if os.path.exists(path):
+            subprocess.run(["launchctl", "unload", "-w", path],
+                           capture_output=True)
+            os.unlink(path)
+            print(f"  retired the old agent {label}")
+
+
 def cmd_start(_args):
+    _retire_legacy_agents()
     os.makedirs(os.path.dirname(PLIST_PATH), exist_ok=True)
     arguments = "".join(f"    <string>{part}</string>\n"
                         for part in agent_command())

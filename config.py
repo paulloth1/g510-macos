@@ -37,6 +37,9 @@ DEFAULTS = {
         "host": "",
         "port": 9999,
         "refresh_seconds": 5.0,
+        # auto tries Creality's WebSocket, then Moonraker, then OctoPrint.
+        "kind": "auto",
+        "api_key": "",
     },
     # Which usage windows the Claude screen shows, top to bottom. Any two of
     # five_hour, seven_day, context.

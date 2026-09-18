@@ -18,14 +18,20 @@ _source = None
 _source_key = None
 
 
+BACKENDS = ("auto", "creality", "moonraker", "octoprint")
+
+
 def settings():
     """The printer block from the config, whether or not it is filled in."""
     block = config.load().get("printer") or {}
+    kind = (block.get("kind") or "auto").lower()
     return {
         "enabled": bool(block.get("enabled")),
         "host": (block.get("host") or "").strip(),
         "port": int(block.get("port") or DEFAULT_PORT),
         "refresh": float(block.get("refresh_seconds") or 5.0),
+        "kind": kind if kind in BACKENDS else "auto",
+        "api_key": (block.get("api_key") or "").strip(),
     }
 
 
@@ -39,11 +45,12 @@ def status(force=False):
     conf = settings()
     if not conf["enabled"] or not conf["host"]:
         return None
-    key = (conf["host"], conf["port"], conf["refresh"])
+    key = (conf["host"], conf["port"], conf["refresh"], conf["kind"],
+           conf["api_key"])
     if key != _source_key:
         _source_key = key
         _source = refresh.Background(
-            lambda: _fetch(conf["host"], conf["port"]), conf["refresh"])
+            lambda: _fetch(conf), conf["refresh"])
     return _source.get_now() if force else _source.get()
 
 
@@ -51,7 +58,22 @@ def last_error():
     return _source.error if _source else None
 
 
-def _fetch(host, port):
+def _fetch(conf):
+    """Try whichever backend is configured, or each in turn."""
+    order = ([conf["kind"]] if conf["kind"] != "auto"
+             else ["creality", "moonraker", "octoprint"])
+    errors = []
+    for kind in order:
+        reading, error = _BACKENDS[kind](conf)
+        if reading:
+            return reading, None
+        errors.append(f"{kind}: {error}")
+    return None, "; ".join(errors)
+
+
+def _fetch_creality(conf):
+    """Creality firmware: a WebSocket whose first frame is a full snapshot."""
+    host, port = conf["host"], conf["port"]
     try:
         import websocket
     except ImportError:
@@ -73,6 +95,91 @@ def _fetch(host, port):
     if not isinstance(snapshot, dict):
         return None, "unexpected reply shape"
     return _normalise(snapshot), None
+
+
+def _get_json(url, timeout=CONNECT_TIMEOUT, headers=None):
+    import json as _json
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _json.loads(response.read().decode()), None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, str(exc)
+
+
+def _fetch_moonraker(conf):
+    """Klipper via Moonraker, which most non-vendor firmware exposes."""
+    host = conf["host"]
+    port = conf["port"] if conf["kind"] == "moonraker" else 7125
+    url = (f"http://{host}:{port}/printer/objects/query"
+           "?print_stats&display_status&extruder&heater_bed")
+    body, error = _get_json(url)
+    if not body:
+        return None, error
+    status = (body.get("result") or {}).get("status") or {}
+    stats = status.get("print_stats") or {}
+    display = status.get("display_status") or {}
+    extruder = status.get("extruder") or {}
+    bed = status.get("heater_bed") or {}
+    if not stats and not display:
+        return None, "no print_stats in the reply"
+    progress = float(display.get("progress") or 0) * 100
+    elapsed = float(stats.get("print_duration") or 0)
+    # Moonraker reports elapsed, not remaining, so estimate from progress.
+    left = int(elapsed / progress * 100 - elapsed) if progress > 1 else 0
+    state = {"printing": 1, "paused": 2, "complete": 3, "cancelled": 3,
+             "error": 3, "standby": 0}.get(stats.get("state"), 0)
+    return {
+        "model": conf["host"], "file": str(stats.get("filename") or ""),
+        "progress": int(progress), "left": left, "elapsed": int(elapsed),
+        "layer": int(stats.get("info", {}).get("current_layer") or 0),
+        "layers": int(stats.get("info", {}).get("total_layer") or 0),
+        "nozzle": float(extruder.get("temperature") or 0),
+        "nozzle_target": float(extruder.get("target") or 0),
+        "bed": float(bed.get("temperature") or 0),
+        "bed_target": float(bed.get("target") or 0),
+        "state": state,
+    }, None
+
+
+def _fetch_octoprint(conf):
+    """OctoPrint, which needs an API key from its settings page."""
+    host = conf["host"]
+    port = conf["port"] if conf["kind"] == "octoprint" else 80
+    if not conf["api_key"]:
+        return None, "needs an API key (g510 printer key <key>)"
+    headers = {"X-Api-Key": conf["api_key"]}
+    job, error = _get_json(f"http://{host}:{port}/api/job", headers=headers)
+    if not job:
+        return None, error
+    printer_state, _ = _get_json(f"http://{host}:{port}/api/printer",
+                                 headers=headers)
+    temps = ((printer_state or {}).get("temperature") or {})
+    progress = job.get("progress") or {}
+    flags = ((printer_state or {}).get("state") or {}).get("flags") or {}
+    state = 1 if flags.get("printing") else 2 if flags.get("paused") else 0
+    return {
+        "model": conf["host"],
+        "file": str(((job.get("job") or {}).get("file") or {}).get("name") or ""),
+        "progress": int(progress.get("completion") or 0),
+        "left": int(progress.get("printTimeLeft") or 0),
+        "elapsed": int(progress.get("printTime") or 0),
+        "layer": 0, "layers": 0,
+        "nozzle": float((temps.get("tool0") or {}).get("actual") or 0),
+        "nozzle_target": float((temps.get("tool0") or {}).get("target") or 0),
+        "bed": float((temps.get("bed") or {}).get("actual") or 0),
+        "bed_target": float((temps.get("bed") or {}).get("target") or 0),
+        "state": state,
+    }, None
+
+
+_BACKENDS = {
+    "creality": _fetch_creality,
+    "moonraker": _fetch_moonraker,
+    "octoprint": _fetch_octoprint,
+}
 
 
 def _normalise(snapshot):
