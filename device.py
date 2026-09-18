@@ -27,6 +27,14 @@ INPUT_MACRO_KEYS = 0x03
 # the user is actually typing. It must never be logged, broadcast or stored.
 KEYSTROKE_REPORTS = frozenset({0x01, 0x02})
 
+# The standard HID keyboard LED report: one byte, one bit each. macOS drives
+# Caps Lock and nothing else - it has no Num Lock at all, that key is Clear
+# and the keypad always types digits - so Num Lock and Scroll Lock are free
+# to say something useful.
+LED_NUM_LOCK = 0x01
+LED_CAPS_LOCK = 0x02
+LED_SCROLL_LOCK = 0x04
+
 LCD_REPORT = 0x03
 LCD_WIDTH, LCD_HEIGHT, LCD_PAGES = 160, 43, 6
 LCD_FRAME_LEN = 992          # 32-byte header + 160 columns * 6 pages
@@ -94,6 +102,57 @@ def find_path():
             if dev["usage_page"] == VENDOR_USAGE_PAGE:
                 return dev["path"]
     return None
+
+
+def keyboard_led_path():
+    """The boot-keyboard interface, which carries the lock LEDs."""
+    for pid in PRODUCT_IDS:
+        for dev in hid.enumerate(VENDOR_ID, pid):
+            if dev["usage_page"] == 1 and dev["usage"] == 6:
+                return dev["path"]
+    return None
+
+
+class LockLeds:
+    """The Num Lock and Scroll Lock LEDs, which macOS leaves dark.
+
+    Caps Lock is read back from the system rather than assumed, so driving the
+    other two does not switch it off underneath the user.
+    """
+
+    def __init__(self):
+        path = keyboard_led_path()
+        if path is None:
+            raise DeviceNotFound("No G510 keyboard interface found")
+        self._dev = hid.device()
+        self._dev.open_path(path)
+        self._last = None
+
+    def set(self, num=False, scroll=False):
+        state = (LED_NUM_LOCK if num else 0) | (LED_SCROLL_LOCK if scroll else 0)
+        if _caps_lock_on():
+            state |= LED_CAPS_LOCK
+        if state == self._last:
+            return False
+        self._dev.write(bytes([0x00, state]))
+        self._last = state
+        return True
+
+    def close(self):
+        try:
+            self._dev.write(bytes([0x00, LED_CAPS_LOCK if _caps_lock_on() else 0]))
+        except Exception:
+            pass
+        self._dev.close()
+
+
+def _caps_lock_on():
+    try:
+        import Quartz
+        return bool(Quartz.CGEventSourceFlagsState(1)
+                    & Quartz.kCGEventFlagMaskAlphaShift)
+    except Exception:
+        return False
 
 
 class G510:

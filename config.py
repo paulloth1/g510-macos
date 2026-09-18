@@ -51,6 +51,9 @@ DEFAULTS = {
     # macOS assumes this keyboard is ANSI because it declares no locale, which
     # swaps ^/° with <>| on an ISO board. See control.iso_swap.
     "iso_keyboard": False,
+    # macOS drives Caps Lock and leaves the other two lock LEDs dark, so they
+    # are free. Each can be: off, printing, claude, recording.
+    "indicators": {"numlock": "off", "scrolllock": "off"},
     # The joystick switch on the top left is Logitech's game-mode switch. It
     # reports over USB, so it can drive anything: "bank:N", "screen:<name>",
     # "color:<colour>", or a binding object.

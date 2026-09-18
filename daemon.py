@@ -34,6 +34,8 @@ class Daemon:
         self.pressed = set()
         self.lcd_pressed = set()
         self.mode_pressed = set()
+        self.leds = None
+        self.last_leds = 0.0
         self.record_state = None       # None | "await_key" | "recording"
         self.record_target = None
         self.recorder = None
@@ -90,6 +92,8 @@ class Daemon:
         self.pressed = set()
         self.lcd_pressed = set()
         self.mode_pressed = set()
+        self.leds = None
+        self.last_leds = 0.0
 
     # -- control socket ----------------------------------------------------
 
@@ -517,6 +521,42 @@ class Daemon:
         with self.lock:
             self.keyboard.send_lcd(pixels)
 
+    INDICATORS = ("off", "printing", "claude", "recording")
+
+    def indicator_state(self, what):
+        """Whether a given indicator should be lit right now."""
+        if what == "printing":
+            import printer
+            return printer.is_printing(printer.status())
+        if what == "claude":
+            reading = screens.claude_utilization()
+            value = reading.get("five_hour")
+            return value is not None and value >= 80
+        if what == "recording":
+            return self.record_state is not None
+        return False
+
+    def refresh_indicators(self, now):
+        """Drive the two lock LEDs macOS leaves dark.
+
+        Only written when the answer changes, so this is not touching the
+        keyboard interface every second.
+        """
+        wanted = self.config.get("indicators") or {}
+        if not any(v and v != "off" for v in wanted.values()):
+            return
+        if now - self.last_leds < 2.0:
+            return
+        self.last_leds = now
+        try:
+            if self.leds is None:
+                self.leds = device.LockLeds()
+            self.leds.set(num=self.indicator_state(wanted.get("numlock")),
+                          scroll=self.indicator_state(wanted.get("scrolllock")))
+        except Exception as exc:
+            log(f"could not drive the lock LEDs: {exc}")
+            self.leds = None
+
     def refresh_app_color(self, now):
         """Track the frontmost app: both colours and profiles depend on it."""
         if now - self.last_app_check < APP_CHECK_INTERVAL:
@@ -545,6 +585,7 @@ class Daemon:
                 self.handle_gkeys()
                 self.refresh_lcd(now)
                 self.refresh_app_color(now)
+                self.refresh_indicators(now)
             except (OSError, ValueError) as exc:
                 self.drop(exc)
                 time.sleep(RECONNECT_DELAY)
@@ -555,6 +596,11 @@ class Daemon:
     def shutdown(self):
         log("g510 daemon stopping")
         self.server.stop()
+        if self.leds is not None:
+            try:
+                self.leds.close()
+            except Exception:
+                pass
         with self.lock:
             keyboard, self.keyboard = self.keyboard, None
             if keyboard:

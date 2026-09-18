@@ -69,6 +69,7 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
   g510 permissions              check/request the macOS permissions needed
   g510 verify                   check the key mapping against the markings
   g510 iso [on|off]             fix ^/° and <>| being swapped
+  g510 leds [which] [what]      use the Num/Scroll Lock LEDs macOS ignores
   g510 install                  put the g510 command on your PATH
 
   g510 start | stop | status    run the background agent at login
@@ -596,6 +597,36 @@ def _await_press(stream, expected, timeout=15.0):
     return None
 
 
+INDICATORS = ("off", "printing", "claude", "recording")
+
+
+def cmd_leds(args):
+    """Use the Num Lock and Scroll Lock LEDs, which macOS leaves dark."""
+    settings = config.load()
+    block = settings.setdefault("indicators", {})
+    if not args:
+        print(f"  num lock     {block.get('numlock', 'off')}")
+        print(f"  scroll lock  {block.get('scrolllock', 'off')}")
+        print("\n  macOS has no Num Lock and never drives either of these, so")
+        print("  they are free. Each can show: " + ", ".join(INDICATORS))
+        print("\n  e.g. g510 leds numlock printing")
+        print("       g510 leds scrolllock claude")
+        return
+    if len(args) < 2:
+        sys.exit("Usage: g510 leds numlock|scrolllock " + "|".join(INDICATORS))
+    which = args[0].lower().replace("-", "")
+    if which not in ("numlock", "scrolllock"):
+        sys.exit("First argument must be numlock or scrolllock")
+    what = args[1].lower()
+    if what not in INDICATORS:
+        sys.exit(f"Unknown indicator {what!r}. Choose from: "
+                 + ", ".join(INDICATORS))
+    block[which] = what
+    save_config(settings)
+    reload_agent()
+    print(f"{which} -> {what}")
+
+
 def cmd_iso(args):
     """Fix ^/° and <>| being swapped, which macOS does on this keyboard."""
     settings = config.load()
@@ -818,7 +849,7 @@ COMMANDS = {
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
     "bank": cmd_bank, "switch": cmd_switch,
     "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install,
-    "verify": cmd_verify, "iso": cmd_iso, "start": cmd_start, "stop": cmd_stop,
+    "verify": cmd_verify, "iso": cmd_iso, "leds": cmd_leds, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 
