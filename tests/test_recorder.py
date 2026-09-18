@@ -20,6 +20,16 @@ CAPS = Quartz.kCGEventFlagMaskAlphaShift
 A, C, K4, LEFT, F1 = 0, 8, 21, 123, 122
 
 
+def setUpModule():
+    """Pin the fallback table.
+
+    parse_chord normally resolves a single character against the keyboard
+    layout in use, so these would otherwise assert different keycodes on a
+    German machine than on a US one. the round-trip invariant is about the fallback table; the layout path has its own tests.
+    """
+    actions._layout_keys = {}
+
+
 class DescribeEventTests(unittest.TestCase):
 
     def test_an_unmodified_key(self):

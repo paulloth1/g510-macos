@@ -17,6 +17,16 @@ CTRL = Quartz.kCGEventFlagMaskControl
 FN = Quartz.kCGEventFlagMaskSecondaryFn
 
 
+def setUpModule():
+    """Pin the fallback table.
+
+    parse_chord normally resolves a single character against the keyboard
+    layout in use, so these would otherwise assert different keycodes on a
+    German machine than on a US one. chord parsing is tested against the positional US table; the layout path has its own tests.
+    """
+    actions._layout_keys = {}
+
+
 class ParseChordTests(unittest.TestCase):
 
     def test_a_bare_key_has_no_modifiers(self):
@@ -72,11 +82,22 @@ class ParseChordTests(unittest.TestCase):
         self.assertEqual(parse_chord("cmd+shift+="), (KEY_CODES["="], CMD | SHIFT))
 
     def test_an_empty_chord_is_refused(self):
-        for text in ("", "   ", "+", "++", " + "):
+        for text in ("", "   "):
             with self.subTest(text=text):
                 with self.assertRaises(ActionError) as caught:
                     parse_chord(text)
                 self.assertIn("Empty", str(caught.exception))
+
+    def test_plus_names_the_plus_key_rather_than_being_empty(self):
+        # "+" is the separator, so it used to parse to nothing at all. It is
+        # a main-row key on several layouts, so it now names itself - and is
+        # refused here only because the US fallback table has no plus key.
+        for text in ("+", "++", " + "):
+            with self.subTest(text=text):
+                with self.assertRaises(ActionError) as caught:
+                    parse_chord(text)
+                self.assertIn("+", str(caught.exception))
+                self.assertIn("key", str(caught.exception))
 
     def test_an_unknown_modifier_is_refused(self):
         with self.assertRaises(ActionError) as caught:
@@ -207,3 +228,47 @@ class DescribeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LayoutResolutionTests(unittest.TestCase):
+    """Chords resolve against the keyboard in use, not a hard-coded US table."""
+
+    def setUp(self):
+        self.saved = actions._layout_keys
+        # A stand-in for a German layout: y and z swapped against the US
+        # positions, and an umlaut where the US board has a bracket.
+        actions._layout_keys = {
+            "z": (16, False), "y": (6, False), "ü": (33, False),
+            "<": (50, False), ">": (50, True), "+": (30, False),
+        }
+
+    def tearDown(self):
+        actions._layout_keys = self.saved
+
+    def test_a_character_uses_the_layout_not_the_us_position(self):
+        self.assertEqual(parse_chord("z")[0], 16)
+        self.assertEqual(parse_chord("y")[0], 6)
+        self.assertNotEqual(parse_chord("z")[0], KEY_CODES["z"])
+
+    def test_a_key_the_us_table_has_no_name_for(self):
+        self.assertEqual(parse_chord("ü")[0], 33)
+        self.assertEqual(parse_chord("cmd+ü"), (33, MODIFIER_FLAGS["cmd"]))
+
+    def test_a_shifted_character_adds_the_shift_flag(self):
+        code, flags = parse_chord(">")
+        self.assertEqual(code, 50)
+        self.assertTrue(flags & MODIFIER_FLAGS["shift"])
+        self.assertEqual(parse_chord("<"), (50, 0))
+
+    def test_plus_resolves_through_the_layout(self):
+        self.assertEqual(parse_chord("+")[0], 30)
+        self.assertEqual(parse_chord("cmd++"), (30, MODIFIER_FLAGS["cmd"]))
+
+    def test_named_keys_stay_positional(self):
+        for name in ("return", "f5", "left", "space"):
+            with self.subTest(name=name):
+                self.assertEqual(parse_chord(name)[0], KEY_CODES[name])
+
+    def test_an_unknown_character_is_still_refused(self):
+        with self.assertRaises(ActionError):
+            parse_chord("§")

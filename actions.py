@@ -8,7 +8,12 @@ import time
 
 import Quartz
 
-# macOS virtual key codes, keyed by the names used in the config file.
+# Virtual key codes for keys that have a name rather than a character. These
+# are positional and layout-independent, so they are safe to hard-code.
+#
+# The character keys below them are the US spellings, kept only as a fallback:
+# a chord is normally resolved against the layout actually in use, because
+# keycode 6 is "z" on a US board and "y" on a German one. See layout.py.
 KEY_CODES = {
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8,
     "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
@@ -72,22 +77,71 @@ class PermissionError_(ActionError):
     """Raised when a binding needs Accessibility and it has not been granted."""
 
 
+def _split_chord(chord):
+    """Split on "+" while still allowing "+" itself to be the key.
+
+    "cmd++" is cmd plus the plus key; "+" alone is just that key. Splitting
+    naively drops it, which matters on any layout where + is a main key.
+    """
+    parts = [p.strip() for p in chord.split("+")]
+    if parts and parts[-1] == "" and len(parts) > 1:
+        parts = parts[:-1]
+        parts[-1] = "+" if parts[-1] == "" else parts[-1]
+        if parts[-1] != "+":
+            parts.append("+")
+    parts = [p for p in parts if p]
+    if not parts and chord.strip():
+        parts = ["+"]
+    return [p if len(p) == 1 else p.lower() for p in parts]
+
+
+_layout_keys = None
+
+
+def layout_keys():
+    """{character: (keycode, needs_shift)} for the keyboard in use.
+
+    Cached for the life of the process: switching layout is rare, and the
+    lookup costs a couple of hundred calls into the Text Input Source API.
+    """
+    global _layout_keys
+    if _layout_keys is None:
+        try:
+            import layout
+            _layout_keys = layout.name_to_keycode()
+        except Exception:
+            _layout_keys = {}
+    return _layout_keys
+
+
 def parse_chord(chord):
-    """'cmd+shift+4' -> (keycode, flags)."""
+    """'cmd+shift+4' -> (keycode, flags).
+
+    A single character is looked up in the active layout first, so "z" means
+    the key that types z and "ü" works at all. Named keys - return, f1, left -
+    are positional and come from KEY_CODES.
+    """
     if not isinstance(chord, str):
         raise ActionError(f"Expected a key chord, got {chord!r}")
-    parts = [p.strip().lower() for p in chord.split("+") if p.strip()]
+    parts = _split_chord(chord)
     if not parts:
         raise ActionError(f"Empty key chord: {chord!r}")
     flags = 0
     for part in parts[:-1]:
-        if part not in MODIFIER_FLAGS:
+        if part.lower() not in MODIFIER_FLAGS:
             raise ActionError(f"Unknown modifier {part!r} in {chord!r}")
-        flags |= MODIFIER_FLAGS[part]
+        flags |= MODIFIER_FLAGS[part.lower()]
     key = parts[-1]
-    if key not in KEY_CODES:
+    if len(key) == 1:
+        found = layout_keys().get(key) or layout_keys().get(key.lower())
+        if found:
+            keycode, needs_shift = found
+            if needs_shift:
+                flags |= MODIFIER_FLAGS["shift"]
+            return keycode, flags
+    if key.lower() not in KEY_CODES:
         raise ActionError(f"Unknown key {key!r} in {chord!r}")
-    return KEY_CODES[key], flags
+    return KEY_CODES[key.lower()], flags
 
 
 def send_chord(chord):
