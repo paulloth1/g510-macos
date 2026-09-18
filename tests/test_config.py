@@ -342,7 +342,6 @@ class MalformedFileTests(ConfigFileTestCase):
         self.assertIsNotNone(config.last_error)
         self.assertIn("Could not read", config.last_error)
 
-    @unittest.expectedFailure
     def test_valid_json_that_is_not_an_object_is_survivable(self):
         # BUG: json.load() succeeds for `null`, a list or a bare string, and
         # _merge then raises AttributeError straight out of load(), which is
@@ -614,7 +613,6 @@ class EnsureExistsTests(ConfigFileTestCase):
         self.assertEqual(settings["backlight"], config.DEFAULTS["backlight"])
         self.assertEqual(settings["lcd"], config.DEFAULTS["lcd"])
 
-    @unittest.expectedFailure
     def test_the_starter_file_contains_the_default_bindings(self):
         # BUG: ensure_exists() saves DEFAULTS, which has no "banks" key, so
         # save() drops "bindings" and persists nothing in its place. The file
@@ -643,7 +641,6 @@ class BankPersistenceTests(ConfigFileTestCase):
         self.assertEqual(config.load()["bindings"]["G1"],
                          {"type": "app", "name": "Mail"})
 
-    @unittest.expectedFailure
     def test_unbinding_every_key_in_bank_one_survives_a_restart(self):
         # BUG: save() writes the empty bank correctly, but on the way back in
         # _merge() re-injects DEFAULTS["bindings"] (the file has no "bindings"

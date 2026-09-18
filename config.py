@@ -80,7 +80,7 @@ def _merge(base, override):
 BANKS = ("1", "2", "3")
 
 
-def _migrate(settings):
+def _migrate(settings, raw=None):
     """Move a flat `bindings` set into bank 1, the first time banks are used.
 
     The M1/M2/M3 keys pick between three independent sets of G-key bindings,
@@ -93,7 +93,12 @@ def _migrate(settings):
     for name in BANKS:
         if not isinstance(banks.get(name), dict):
             banks[name] = {}
-    if settings.get("bindings") and not banks["1"]:
+    # Only a file that predates banks gets its flat `bindings` migrated. After
+    # _merge has run, DEFAULTS' bindings are indistinguishable from the user's
+    # own - so the decision is made on the raw file contents, or this quietly
+    # restores the factory bindings every time bank 1 is emptied.
+    legacy = raw is None or ("bindings" in raw and "banks" not in raw)
+    if legacy and settings.get("bindings") and not banks["1"]:
         banks["1"] = dict(settings["bindings"])
     settings["banks"] = banks
     active = str(settings.get("active_bank", "1"))
@@ -121,7 +126,10 @@ def load():
         return _migrate(copy.deepcopy(DEFAULTS))
     try:
         with open(CONFIG_PATH) as handle:
-            settings = _migrate(_merge(DEFAULTS, json.load(handle)))
+            raw = json.load(handle)
+        if not isinstance(raw, dict):
+            raise ValueError("the config must be a JSON object")
+        settings = _migrate(_merge(DEFAULTS, raw), raw)
     except (json.JSONDecodeError, ValueError) as exc:
         last_error = f"{CONFIG_PATH} is not valid JSON ({exc})"
         return (copy.deepcopy(_last_good) if _last_good
@@ -183,9 +191,14 @@ def save(config, force=False):
 
 
 def ensure_exists():
-    """Write out the defaults the first time, so there is something to edit."""
+    """Write out the defaults the first time, so there is something to edit.
+
+    Migrated first: save() persists banks and drops the derived `bindings`
+    view, so writing raw DEFAULTS produces a starter file with no G-key
+    section at all.
+    """
     if not os.path.exists(CONFIG_PATH):
-        save(DEFAULTS)
+        save(_migrate(copy.deepcopy(DEFAULTS)))
         return True
     return False
 
@@ -233,7 +246,11 @@ def apply_brightness(rgb, brightness):
     The G510 has no separate brightness register - the backlight is just the
     RGB value - so brightness is a scale factor on the chosen colour.
     """
-    factor = max(0, min(100, int(brightness))) / 100.0
+    try:
+        level = int(brightness)
+    except (TypeError, ValueError):
+        level = 100
+    factor = max(0, min(100, level)) / 100.0
     return tuple(int(round(channel * factor)) for channel in rgb)
 
 

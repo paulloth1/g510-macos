@@ -146,7 +146,6 @@ class UntilTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertLessEqual(len(screens.until(text)), 7)
 
-    @unittest.expectedFailure
     def test_a_timestamp_without_a_timezone_is_not_shown(self):
         # BUG: until() promises a string "or None", but an ISO timestamp with
         # no timezone parses fine and then raises TypeError on the subtraction

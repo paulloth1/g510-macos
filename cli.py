@@ -3,6 +3,7 @@ import collections
 import os
 import subprocess
 import sys
+import time
 
 import actions
 import config
@@ -66,6 +67,7 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
   g510 profile "App" G1 ...     per-app binding overrides
   g510 config                   path to the config file
   g510 permissions              check/request the macOS permissions needed
+  g510 verify                   check the key mapping against the markings
   g510 install                  put the g510 command on your PATH
 
   g510 start | stop | status    run the background agent at login
@@ -571,6 +573,117 @@ def cmd_install(_args):
         print(f'  echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc')
 
 
+VERIFY_GKEYS = ["G1", "G6", "G7", "G12", "G13", "G18"]
+VERIFY_MODE = [("M1", "M1"), ("M2", "M2"), ("M3", "M3"), ("MR", "MR")]
+VERIFY_LCD = [
+    ("L2", "the FIRST button under the display, leftmost"),
+    ("L3", "the SECOND button under the display"),
+    ("L4", "the THIRD button under the display"),
+    ("L5", "the FOURTH button under the display, rightmost"),
+]
+
+
+def _await_press(stream, expected, timeout=15.0):
+    """Wait for one key press, returning what was decoded, or None."""
+    deadline = time.time() + timeout
+    for message in stream:
+        if time.time() > deadline:
+            return None
+        if message.get("event") != "press":
+            continue
+        return message.get("key")
+    return None
+
+
+def cmd_verify(_args):
+    """Check the decoded key names against the keyboard's own markings.
+
+    Most of the bit positions were worked out from the order keys were pressed
+    during mapping, not from their labels - so this asks for specific keys by
+    the text printed on them and reports anything that disagrees.
+    """
+    was_running = agent_loaded()
+    if was_running:
+        print("Stopping the agent so pressing keys does not fire bindings.\n")
+        subprocess.run(["launchctl", "unload", "-w", PLIST_PATH],
+                       capture_output=True)
+        time.sleep(1.0)
+    problems = []
+    try:
+        stream = control.watch_gkeys()
+        print("Press each key as asked. Ctrl-C to stop.\n")
+
+        for label in VERIFY_GKEYS:
+            print(f"  press the key marked {label} ... ", end="", flush=True)
+            got = _await_press(stream, label)
+            print(_result(label, got, problems))
+
+        for label, marking in VERIFY_MODE:
+            print(f"  press the key marked {marking} ... ", end="", flush=True)
+            got = _await_press(stream, label)
+            print(_result(label, got, problems))
+
+        for label, description in VERIFY_LCD:
+            print(f"  press {description} ... ", end="", flush=True)
+            got = _await_press(stream, label)
+            print(_result(label, got, problems))
+
+        print("\n  flip the joystick switch (top left) ... ", end="", flush=True)
+        got = _await_press(stream, "GAME")
+        print(_result("GAME", got, problems))
+    except control.ControlError as exc:
+        print(f"\n{exc}")
+        return
+    except KeyboardInterrupt:
+        print("\n  stopped early")
+    finally:
+        _verify_leds(problems)
+        if was_running:
+            subprocess.run(["launchctl", "load", "-w", PLIST_PATH],
+                           capture_output=True)
+            print("\nAgent restarted.")
+
+    print()
+    if problems:
+        print(f"{len(problems)} mismatch(es) - the mapping does not match the "
+              "keyboard:")
+        for line in problems:
+            print(f"  {line}")
+    else:
+        print("Everything checked matches the markings on the keyboard.")
+
+
+def _result(expected, got, problems):
+    if got is None:
+        return "no press seen (skipped)"
+    if got == expected:
+        return f"read as {got}  ok"
+    problems.append(f"{expected} on the keyboard reads as {got} in software")
+    return f"read as {got}  MISMATCH"
+
+
+def _verify_leds(problems):
+    """Light each M-key LED alone and ask which one actually lit."""
+    print("\n  Now the M-key LEDs.")
+    for name in ("m1", "m2", "m3", "mr"):
+        try:
+            control.set_mkeys([name])
+        except control.ControlError as exc:
+            print(f"    {exc}")
+            return
+        answer = input(f"    lighting {name.upper()} - which one lit up? "
+                       "(m1/m2/m3/mr, or blank to skip) ").strip().lower()
+        if not answer:
+            continue
+        if answer != name:
+            problems.append(f"LED {name.upper()} lights the one marked "
+                            f"{answer.upper()}")
+    try:
+        control.set_mkeys([])
+    except control.ControlError:
+        pass
+
+
 def cmd_permissions(_args):
     """Report and request the macOS permissions the bindings need."""
     reading = actions.can_read_input()
@@ -679,7 +792,8 @@ COMMANDS = {
     "brightness": cmd_brightness, "record": cmd_record, "macros": cmd_macros,
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
     "bank": cmd_bank, "switch": cmd_switch,
-    "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install, "start": cmd_start, "stop": cmd_stop,
+    "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install,
+    "verify": cmd_verify, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 

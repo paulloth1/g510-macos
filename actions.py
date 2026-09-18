@@ -74,6 +74,8 @@ class PermissionError_(ActionError):
 
 def parse_chord(chord):
     """'cmd+shift+4' -> (keycode, flags)."""
+    if not isinstance(chord, str):
+        raise ActionError(f"Expected a key chord, got {chord!r}")
     parts = [p.strip().lower() for p in chord.split("+") if p.strip()]
     if not parts:
         raise ActionError(f"Empty key chord: {chord!r}")
@@ -137,18 +139,20 @@ def dispatch(binding, macros=None):
     """Run one binding dict, e.g. {"type": "keys", "keys": "cmd+c"}."""
     if not binding:
         return
+    if not isinstance(binding, dict):
+        raise ActionError(f"A binding must be an object, not {binding!r}")
     kind = binding.get("type")
     if kind in NEEDS_ACCESSIBILITY and not can_post_events():
         raise PermissionError_(
             f"a {kind!r} binding needs Accessibility permission - run: g510 permissions")
     if kind == "keys":
-        send_chord(binding["keys"])
+        send_chord(_required(binding, "keys"))
     elif kind == "text":
-        type_text(binding["text"])
+        type_text(_required(binding, "text"))
     elif kind == "shell":
-        run_shell(binding["command"])
+        run_shell(_required(binding, "command"))
     elif kind == "app":
-        launch_app(binding["name"])
+        launch_app(_required(binding, "name"))
     elif kind == "macro":
         name = binding.get("name")
         steps = (macros or {}).get(name)
@@ -159,21 +163,44 @@ def dispatch(binding, macros=None):
         raise ActionError(f"Unknown binding type {kind!r}")
 
 
+def _required(binding, field):
+    """Pull a binding's field, as an ActionError rather than a KeyError."""
+    value = binding.get(field)
+    if value is None or value == "":
+        raise ActionError(
+            f"A {binding.get('type')!r} binding needs a {field!r} field")
+    return value
+
+
 def describe(binding):
-    """Short human-readable summary of a binding, for menus and listings."""
+    """Short human-readable summary of a binding, for menus and listings.
+
+    Runs against whatever is in the config, which is meant to be hand-edited,
+    so every shape has to produce a string. This renders every menu and every
+    listing; raising here blanks the whole UI.
+    """
     if not binding:
         return "-"
+    if not isinstance(binding, dict):
+        return str(binding)[:26]
     kind = binding.get("type")
     if kind == "keys":
-        return binding.get("keys", "?")
+        return _as_text(binding.get("keys")) or "?"
     if kind == "text":
-        text = binding.get("text", "")
-        return f'type "{text[:18]}{"..." if len(text) > 18 else ""}"'
+        return f'type "{_clip(_as_text(binding.get("text")), 18)}"'
     if kind == "shell":
-        command = binding.get("command", "")
-        return f"$ {command[:22]}{'...' if len(command) > 22 else ''}"
+        return f"$ {_clip(_as_text(binding.get('command')), 22)}"
     if kind == "app":
-        return f"open {binding.get('name', '?')}"
+        return f"open {_as_text(binding.get('name')) or '?'}"
     if kind == "macro":
-        return f"macro {binding.get('name', '?')}"
+        return f"macro {_as_text(binding.get('name')) or '?'}"
     return str(kind)
+
+
+def _as_text(value):
+    """Whatever the config holds, as a string. None becomes empty."""
+    return "" if value is None else str(value)
+
+
+def _clip(text, limit):
+    return text[:limit] + ("..." if len(text) > limit else "")

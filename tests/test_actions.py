@@ -175,9 +175,8 @@ class DescribeTests(unittest.TestCase):
 
     def test_a_non_string_name_is_survivable(self):
         self.assertEqual(describe({"type": "app", "name": 7}), "open 7")
-        self.assertEqual(describe({"type": "macro", "name": None}), "macro None")
+        self.assertEqual(describe({"type": "macro", "name": None}), "macro ?")
 
-    @unittest.expectedFailure
     def test_a_field_of_the_wrong_type_does_not_crash(self):
         # BUG: describe() trusts the field types a config file happens to
         # carry. A null or numeric "keys"/"text"/"command" - easy to leave
@@ -197,7 +196,6 @@ class DescribeTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertTrue(describe(binding))
 
-    @unittest.expectedFailure
     def test_a_binding_that_is_not_a_dict_does_not_crash(self):
         # BUG: describe() calls binding.get() on whatever it is handed, so a
         # hand-edited config with "G1": "cmd+c" raises AttributeError in the

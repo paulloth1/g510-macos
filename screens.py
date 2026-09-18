@@ -315,8 +315,12 @@ def until(stamp):
     if not stamp:
         return None
     try:
-        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
+        when = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if when.tzinfo is None:
+        # No offset means no way to know what it is relative to. Showing
+        # nothing beats showing a countdown that is hours wrong.
         return None
     seconds = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
     if seconds <= 0:
