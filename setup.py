@@ -7,9 +7,14 @@ background agent and the command line - see main.py.
 """
 from setuptools import setup
 
+# Named explicitly rather than left to modulegraph. py2app would find most
+# of these by following imports, but the agent and the command line are
+# reached through main.py by argument rather than by import, so at least some
+# of the list is load-bearing and the rest is kept for consistency.
 MODULES = [
     "actions", "cli", "config", "control", "daemon", "device", "gui", "ipc",
-    "lcd", "printer", "recorder", "refresh", "screens", "window",
+    "lcd", "main", "printer", "recorder", "refresh", "screens", "widgets",
+    "window", "pane_keyboard", "pane_display", "pane_keys", "pane_agent",
 ]
 
 setup(
