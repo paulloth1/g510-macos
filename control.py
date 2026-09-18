@@ -110,6 +110,36 @@ def _send_lcd(pixels):
     _direct(lambda k: k.send_lcd(pixels))
 
 
+def iso_swap(enable):
+    """Swap the two keys macOS gets wrong when it assumes an ANSI keyboard.
+
+    A hidutil mapping scoped to this keyboard, so nothing else on the machine
+    is affected. It does not survive a reboot on its own, which is why the
+    agent re-applies it whenever it connects.
+    """
+    import json
+    import subprocess
+
+    matching = json.dumps({"ProductID": device.PRODUCT_IDS[0],
+                           "VendorID": device.VENDOR_ID})
+    if enable:
+        pairs = [
+            {"HIDKeyboardModifierMappingSrc": device.HID_GRAVE,
+             "HIDKeyboardModifierMappingDst": device.HID_NON_US_BACKSLASH},
+            {"HIDKeyboardModifierMappingSrc": device.HID_NON_US_BACKSLASH,
+             "HIDKeyboardModifierMappingDst": device.HID_GRAVE},
+        ]
+    else:
+        pairs = []
+    setting = json.dumps({"UserKeyMapping": pairs})
+    result = subprocess.run(
+        ["hidutil", "property", "--matching", matching, "--set", setting],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ControlError(f"hidutil refused the mapping: {result.stderr.strip()}")
+    return bool(pairs)
+
+
 def device_info():
     """(manufacturer, product) as reported by the keyboard."""
     if ipc.is_running():

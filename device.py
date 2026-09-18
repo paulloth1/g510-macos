@@ -53,6 +53,15 @@ MODE_KEY_BITS = {
 LCD_KEY_BITS = {"L1": 0x01, "L2": 0x02, "L3": 0x04, "L4": 0x08, "L5": 0x10}
 
 
+# The G510 reports CountryCode 0 - it declares no locale - so macOS cannot
+# tell an ISO board from an ANSI one and assumes ANSI. On an ISO keyboard that
+# swaps the only two keys whose positions differ between the two layouts: the
+# one left of "1" and the one beside the left shift. On a German board those
+# are ^/° and <>|. These are their HID usages.
+HID_GRAVE = 0x700000035          # left of "1" on ANSI
+HID_NON_US_BACKSLASH = 0x700000064   # the extra key ISO boards have
+
+
 def _open_non_exclusively():
     """Stop hidapi from seizing the device when we open it.
 

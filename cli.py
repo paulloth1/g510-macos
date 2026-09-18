@@ -68,6 +68,7 @@ USAGE = """g510 - control a Logitech G510 keyboard on macOS
   g510 config                   path to the config file
   g510 permissions              check/request the macOS permissions needed
   g510 verify                   check the key mapping against the markings
+  g510 iso [on|off]             fix ^/° and <>| being swapped
   g510 install                  put the g510 command on your PATH
 
   g510 start | stop | status    run the background agent at login
@@ -595,6 +596,30 @@ def _await_press(stream, expected, timeout=15.0):
     return None
 
 
+def cmd_iso(args):
+    """Fix ^/° and <>| being swapped, which macOS does on this keyboard."""
+    settings = config.load()
+    if not args:
+        state = settings.get("iso_keyboard")
+        print(f"  ISO key swap: {'on' if state else 'off'}")
+        print("\n  The G510 declares no locale, so macOS assumes it is an ANSI")
+        print("  keyboard and swaps the key left of 1 with the one beside the")
+        print("  left shift - on a German board, ^/° and <>|.")
+        print("\n  Try System Settings > Keyboard > Change Keyboard Type first;")
+        print("  that is the proper fix. If it will not stick: g510 iso on")
+        return
+    wanted = args[0].lower() in ("on", "yes", "true", "1")
+    settings["iso_keyboard"] = wanted
+    save_config(settings)
+    try:
+        control.iso_swap(wanted)
+    except control.ControlError as exc:
+        sys.exit(str(exc))
+    reload_agent()
+    print(f"ISO key swap {'applied' if wanted else 'removed'}"
+          + (" - ^ and <> should be the right way round now" if wanted else ""))
+
+
 def cmd_verify(_args):
     """Check the decoded key names against the keyboard's own markings.
 
@@ -793,7 +818,7 @@ COMMANDS = {
     "profile": cmd_profile, "profiles": cmd_profile, "next": cmd_next,
     "bank": cmd_bank, "switch": cmd_switch,
     "printer": cmd_printer, "claude": cmd_claude, "install": cmd_install,
-    "verify": cmd_verify, "start": cmd_start, "stop": cmd_stop,
+    "verify": cmd_verify, "iso": cmd_iso, "start": cmd_start, "stop": cmd_stop,
     "status": cmd_status, "run": cmd_run, "gui": cmd_gui,
 }
 
