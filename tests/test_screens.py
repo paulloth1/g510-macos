@@ -212,38 +212,146 @@ class FitTests(unittest.TestCase):
         self.assertLessEqual(canvas.measure(result, 12), limit)
 
 
-class AdvanceTests(unittest.TestCase):
-    """Moving a cached now-playing reading forward between polls."""
+class ReconcileTests(unittest.TestCase):
+    """Merging a now-playing poll into the running count of elapsed time.
 
-    def test_elapsed_time_moves_on(self):
-        moved = screens._advance({"playing": True, "duration": 200,
-                                  "elapsed": 30}, 2.5)
-        self.assertEqual(moved["elapsed"], 32.5)
+    The count ticks along on the wall clock between polls, but the player's
+    own number arrives in bursts and can repeat itself, so a poll is only
+    believed when it carries news.
+    """
+
+    def setUp(self):
+        screens._media_anchor.update(key=None, elapsed=0.0, at=0.0,
+                                     playing=None)
+
+    @staticmethod
+    def reading(**fields):
+        base = {"title": "Ballin'", "artist": "Mustard", "app": "spotify",
+                "elapsed": 0.0, "duration": 200.0, "playing": True}
+        base.update(fields)
+        return base
+
+    def test_the_first_poll_sets_the_count(self):
+        moved = screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        self.assertEqual(moved["elapsed"], 30)
+
+    def test_the_count_moves_on_between_polls(self):
+        screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        for second in (101.0, 102.0, 103.0):
+            moved = screens._reconcile(self.reading(elapsed=30), 100.0, second)
+            self.assertEqual(moved["elapsed"], second - 70)
+
+    def test_a_poll_that_repeats_itself_does_not_wind_the_count_back(self):
+        # Spotify holds one position for a stretch and then jumps to catch
+        # up. Resetting the count to the repeated number is what made the
+        # bar count three seconds ahead and snap back again, forever.
+        screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        screens._reconcile(self.reading(elapsed=30), 100.0, 102.0)
+        moved = screens._reconcile(self.reading(elapsed=30), 103.0, 103.0)
+        self.assertEqual(moved["elapsed"], 33)
+
+    def test_a_poll_that_lags_a_long_way_behind_is_still_ignored(self):
+        # A player that fell silent for a while reports a position far back;
+        # it is stale, not a backwards seek.
+        reading = self.reading(elapsed=30, duration=600)
+        screens._reconcile(reading, 100.0, 100.0)
+        moved = screens._reconcile(dict(reading), 300.0, 300.0)
+        self.assertEqual(moved["elapsed"], 230)
+
+    def test_a_seek_forward_is_taken_up_at_once(self):
+        screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        moved = screens._reconcile(self.reading(elapsed=90), 104.0, 104.0)
+        self.assertEqual(moved["elapsed"], 90)
+        moved = screens._reconcile(self.reading(elapsed=90), 104.0, 105.0)
+        self.assertEqual(moved["elapsed"], 91)
+
+    def test_a_seek_backwards_survives_a_pause(self):
+        # While playing there is telling a lagging player from a real seek
+        # backwards, so the count wins - until pausing settles it.
+        screens._reconcile(self.reading(elapsed=90), 100.0, 100.0)
+        moved = screens._reconcile(self.reading(elapsed=20), 103.0, 103.0)
+        self.assertEqual(moved["elapsed"], 93)
+        moved = screens._reconcile(self.reading(elapsed=20, playing=False),
+                                   104.0, 104.0)
+        self.assertEqual(moved["elapsed"], 20)
+
+    def test_pausing_shows_the_players_own_number(self):
+        screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        moved = screens._reconcile(self.reading(elapsed=42, playing=False),
+                                   106.0, 107.0)
+        self.assertEqual(moved["elapsed"], 42)
+
+    def test_resuming_starts_from_where_the_player_says_it_is(self):
+        screens._reconcile(self.reading(elapsed=42, playing=False), 100.0,
+                           100.0)
+        moved = screens._reconcile(self.reading(elapsed=42), 108.0, 108.0)
+        self.assertEqual(moved["elapsed"], 42)
+        moved = screens._reconcile(self.reading(elapsed=42), 108.0, 109.0)
+        self.assertEqual(moved["elapsed"], 43)
+
+    def test_a_new_track_starts_the_count_again(self):
+        screens._reconcile(self.reading(elapsed=190), 100.0, 100.0)
+        moved = screens._reconcile(self.reading(title="The Box", elapsed=4),
+                                   102.0, 102.0)
+        self.assertEqual(moved["elapsed"], 4)
 
     def test_it_never_runs_past_the_end_of_the_track(self):
-        moved = screens._advance({"playing": True, "duration": 200,
-                                  "elapsed": 199}, 60)
+        screens._reconcile(self.reading(elapsed=199), 100.0, 100.0)
+        moved = screens._reconcile(self.reading(elapsed=199), 101.0, 160.0)
         self.assertEqual(moved["elapsed"], 200)
 
-    def test_a_paused_track_does_not_move(self):
-        reading = {"playing": False, "duration": 200, "elapsed": 30}
-        self.assertEqual(screens._advance(reading, 5)["elapsed"], 30)
-
-    def test_a_track_of_unknown_length_does_not_move(self):
-        reading = {"playing": True, "duration": 0, "elapsed": 30}
-        self.assertEqual(screens._advance(reading, 5)["elapsed"], 30)
+    def test_a_track_of_unknown_length_still_moves_on(self):
+        reading = self.reading(elapsed=30, duration=0)
+        screens._reconcile(reading, 100.0, 100.0)
+        moved = screens._reconcile(dict(reading), 100.0, 103.0)
+        self.assertEqual(moved["elapsed"], 33)
 
     def test_nothing_playing(self):
-        self.assertIsNone(screens._advance(None, 5))
+        self.assertIsNone(screens._reconcile(None, 100.0, 100.0))
+
+    def test_nothing_playing_forgets_the_track(self):
+        screens._reconcile(self.reading(elapsed=30), 100.0, 100.0)
+        screens._reconcile(None, 101.0, 101.0)
+        moved = screens._reconcile(self.reading(elapsed=31), 102.0, 102.0)
+        self.assertEqual(moved["elapsed"], 31)
 
     def test_the_cached_reading_is_left_alone(self):
-        reading = {"playing": True, "duration": 200, "elapsed": 30}
-        screens._advance(reading, 5)
+        reading = self.reading(elapsed=30)
+        screens._reconcile(reading, 100.0, 100.0)
+        screens._reconcile(reading, 100.0, 105.0)
         self.assertEqual(reading["elapsed"], 30)
 
-    def test_a_missing_elapsed_starts_from_zero(self):
-        moved = screens._advance({"playing": True, "duration": 200}, 4)
-        self.assertEqual(moved["elapsed"], 4)
+
+class PositionTests(unittest.TestCase):
+    """The one-line answer Music and Spotify give about their own position."""
+
+    def test_a_playing_player(self):
+        self.assertEqual(screens._parse_position("42.5|180.435|true"),
+                         (42.5, 180.435, True))
+
+    def test_a_paused_player(self):
+        self.assertEqual(screens._parse_position("42|180|false"),
+                         (42.0, 180.0, False))
+
+    def test_a_player_with_no_track_to_ask_about(self):
+        # player position and the track's duration both fail then, so
+        # there is nothing but the error text to look at.
+        self.assertIsNone(screens._parse_position(""))
+        self.assertIsNone(screens._parse_position("\n"))
+        self.assertIsNone(screens._parse_position(
+            "execution error: Not ready. (-600)"))
+
+    def test_a_half_answer_is_no_answer(self):
+        self.assertIsNone(screens._parse_position("42.5|180.435"))
+        self.assertIsNone(screens._parse_position("42.5|180.435|true|junk"))
+        self.assertIsNone(screens._parse_position("42.5||true"))
+        self.assertIsNone(screens._parse_position("42.5|180.435|maybe"))
+
+    def test_a_german_session_writes_commas(self):
+        # AppleScript uses the session's decimal separator, so this is
+        # what arrives when the Mac behind the daemon is set to German.
+        self.assertEqual(screens._parse_position("42,5|180,435|true"),
+                         (42.5, 180.435, True))
 
 
 if __name__ == "__main__":
