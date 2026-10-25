@@ -226,7 +226,7 @@ def _from_nowplaying():
     if not title:
         return None
     bundle = info.get("kMRMediaRemoteNowPlayingInfoClientBundleIdentifier") or ""
-    return {
+    reading = {
         "title": title,
         "artist": info.get("kMRMediaRemoteNowPlayingInfoArtist") or "",
         "elapsed": info.get("kMRMediaRemoteNowPlayingInfoElapsedTime") or 0,
@@ -234,6 +234,67 @@ def _from_nowplaying():
         "playing": bool(info.get("kMRMediaRemoteNowPlayingInfoPlaybackRate")),
         "app": bundle.rsplit(".", 1)[-1],
     }
+    direct = _from_apple_script(DIRECT_POSITION_APPS.get(bundle))
+    if direct:
+        reading["elapsed"], reading["duration"], reading["playing"] = direct
+    return reading
+
+
+# The bundles whose player answers a direct question about its own position,
+# the application name to ask, and what that player counts a track's length
+# in - Spotify's AppleScript counts milliseconds where everything else counts
+# seconds, though its position is in seconds either way. MediaRemote has to
+# be believed for everyone else, and it makes these two up as they go along.
+DIRECT_POSITION_APPS = {
+    "com.spotify.client": ("Spotify", 1000.0),
+    "com.apple.Music": ("Music", 1.0),
+}
+
+
+def _from_apple_script(app):
+    """(elapsed, duration, playing) straight from Music or Spotify.
+
+    Only asked when the system route has already named the app, so nothing
+    gets launched, and only of the two players known to answer exactly -
+    where the system-wide position is only as good as the player's mood.
+    """
+    if not app:
+        return None
+    name, duration_scale = app
+    script = (f'tell application "{name}"\n'
+              '  set pos to get player position\n'
+              '  set len to get duration of current track\n'
+              '  set hot to player state is playing\n'
+              '  return (pos as text) & "|" & (len as text) & "|" & '
+              '(hot as text)\n'
+              'end tell')
+    try:
+        result = subprocess.run(["osascript", "-e", script],
+                                capture_output=True, text=True, timeout=3)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    parsed = _parse_position(result.stdout)
+    if not parsed:
+        return None
+    elapsed, duration, playing = parsed
+    return elapsed, duration / duration_scale, playing
+
+
+def _parse_position(line):
+    """(elapsed, duration, playing) out of AppleScript's one-line answer.
+
+    AppleScript writes numbers with whatever decimal separator the session
+    uses, so a comma arrives on a German Mac.
+    """
+    fields = (line or "").strip().split("|")
+    if len(fields) != 3 or fields[2] not in ("true", "false"):
+        return None
+    try:
+        return (float(fields[0].replace(",", ".")),
+                float(fields[1].replace(",", ".")),
+                fields[2] == "true")
+    except ValueError:
+        return None
 
 
 def _from_players():

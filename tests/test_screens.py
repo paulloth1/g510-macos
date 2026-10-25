@@ -322,5 +322,37 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(reading["elapsed"], 30)
 
 
+class PositionTests(unittest.TestCase):
+    """The one-line answer Music and Spotify give about their own position."""
+
+    def test_a_playing_player(self):
+        self.assertEqual(screens._parse_position("42.5|180.435|true"),
+                         (42.5, 180.435, True))
+
+    def test_a_paused_player(self):
+        self.assertEqual(screens._parse_position("42|180|false"),
+                         (42.0, 180.0, False))
+
+    def test_a_player_with_no_track_to_ask_about(self):
+        # player position and the track's duration both fail then, so
+        # there is nothing but the error text to look at.
+        self.assertIsNone(screens._parse_position(""))
+        self.assertIsNone(screens._parse_position("\n"))
+        self.assertIsNone(screens._parse_position(
+            "execution error: Not ready. (-600)"))
+
+    def test_a_half_answer_is_no_answer(self):
+        self.assertIsNone(screens._parse_position("42.5|180.435"))
+        self.assertIsNone(screens._parse_position("42.5|180.435|true|junk"))
+        self.assertIsNone(screens._parse_position("42.5||true"))
+        self.assertIsNone(screens._parse_position("42.5|180.435|maybe"))
+
+    def test_a_german_session_writes_commas(self):
+        # AppleScript uses the session's decimal separator, so this is
+        # what arrives when the Mac behind the daemon is set to German.
+        self.assertEqual(screens._parse_position("42,5|180,435|true"),
+                         (42.5, 180.435, True))
+
+
 if __name__ == "__main__":
     unittest.main()
