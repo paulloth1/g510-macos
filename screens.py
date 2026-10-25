@@ -142,6 +142,12 @@ _media_source = refresh.Background(
     MEDIA_REFRESH)
 
 
+# Where the running count of elapsed time was last known to agree with the
+# player: the position, the time that position was true at, which track it
+# belongs to, and whether it was playing. See now_playing.
+_media_anchor = {"key": None, "elapsed": 0.0, "at": 0.0, "playing": None}
+
+
 def now_playing():
     """What is playing, from whichever source can see it.
 
@@ -149,18 +155,57 @@ def now_playing():
     which the per-app AppleScript route cannot. Asking costs ~100ms, so it is
     fetched off-thread and the elapsed time advanced locally in between - which
     also makes the progress bar move smoothly rather than in three-second steps.
+
+    The player's own elapsed time is not a ticking clock, so it cannot simply
+    be believed when a poll brings a new one: players push it only when they
+    feel like it, and Spotify holds the same value for a minute or more before
+    jumping to catch up. Resetting the local count to whatever just arrived is
+    what once made the bar race three seconds ahead and snap back again every
+    poll. So while a track is playing the local count is the master, and a
+    poll moves it only when it has news: forward, because of a seek, or all
+    over, because the track or the playback state changed.
     """
     reading = _media_source.get()
-    return _advance(reading, time.time() - _media_source.fetched)
+    return _reconcile(reading, _media_source.fetched, time.time())
 
 
-def _advance(reading, seconds):
-    """Move a cached reading's elapsed time forward without re-polling."""
-    if not reading or not reading.get("playing") or not reading.get("duration"):
+def _reconcile(reading, polled_at, now):
+    """Merge one poll into the running picture of where the track is.
+
+    `polled_at` is when `reading` was sampled, `now` the time being drawn for.
+    A poll that lags the local count is stale and ignored; one that runs ahead
+    is a seek and is taken as the new starting point.
+    """
+    if not reading:
+        _media_anchor.update(key=None, elapsed=0.0, at=0.0, playing=None)
         return reading
+    anchor = _media_anchor
+    duration = float(reading.get("duration") or 0)
+    polled = float(reading.get("elapsed") or 0)
+    playing = bool(reading.get("playing"))
+    key = (reading.get("title"), duration, reading.get("app"))
+    if key != anchor["key"] or playing != anchor["playing"]:
+        # A new track, or the play/pause flipping over. Both are moments the
+        # player has just pushed a fresh position - pausing more or less
+        # always does - so this is the one time its number is worth
+        # believing outright, and the count starts again from it.
+        anchor.update(key=key, elapsed=polled, at=polled_at, playing=playing)
+        return reading
+    if not playing:
+        return reading
+    projected = anchor["elapsed"] + max(0.0, now - anchor["at"])
+    if polled > projected:
+        # The player jumped ahead of us: a seek, or the first news from it
+        # after a stretch of silence. Either way it knows better than the
+        # guesswork does, so start again from what it says.
+        projected = polled
+    # A poll behind the count carries no news - the player repeating itself -
+    # so the count stands and moves on from there. Carrying it forward also
+    # stops a player that fell silent for a long while from looking like a
+    # huge backwards seek the moment it speaks again.
+    anchor.update(elapsed=projected, at=now)
     moved = dict(reading)
-    moved["elapsed"] = min(reading["duration"],
-                           (reading.get("elapsed") or 0) + seconds)
+    moved["elapsed"] = min(duration, projected) if duration else projected
     return moved
 
 
